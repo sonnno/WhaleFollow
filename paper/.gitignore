@@ -1,0 +1,9 @@
+node_modules/
+web/dist/
+.env
+config/local.json
+*.log
+coverage/
+.npm-cache/
+
+data/

@@ -184,7 +184,7 @@ function create(db) {
         const sameCycle = position && position.cycle === Number(order.details.positionCycle || 1);
         const lifecycle = order.status === 'WAITING' ? 'waiting' : !executed ? 'skipped' : order.side === 'SELL' ? 'sold' : settlements.length ? 'settled' : summary.cycleReason === 'SELL' || !sameCycle || D(position.quantity).isZero() ? 'sold' : 'pending';
         const signal = order.details.signal || {};
-        const view = { ...summary, side: order.side, executionStatus: order.status, status: lifecycle, reason: order.reason,
+        const view = { ...summary, side: order.side, executionStatus: order.status, executionAttempts: order.details.attempts || 0, status: lifecycle, reason: order.reason,
           amount: str(order.side === 'BUY' ? D(order.gross).plus(order.fee) : D(order.gross).minus(order.fee)), fee: order.fee,
           quantity: order.quantity, averagePrice: D(order.quantity).gt(0) ? str(D(order.gross).div(order.quantity)) : null,
           sourceAmount: order.details.sourceAmount || str(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount), gross: order.gross,

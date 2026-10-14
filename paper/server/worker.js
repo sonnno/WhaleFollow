@@ -2,13 +2,12 @@ const async = require('async');
 const db = require('./db/adapter').create();
 const redis = require('./lib/redis')();
 const leaders = require('./service/leader-service').create(db);
-const sources = require('./service/source-service').create(db);
 const markets = require('./service/market-service').create(db, redis);
 const controls = require('./service/execution-control-service').create(db, redis);
 const paper = require('./service/paper-service').create(db, markets, { controls });
 const dashboard = require('./service/dashboard-service').create(db);
 function clockSync(callback) { require('./lib/execution-clock').synchronize(require('./lib/http-client'), require('../config').paper.clobUrl, callback); }
-const worker = require('./service/worker-service').create(db, redis, leaders, sources, markets, paper, dashboard, { clockSync, controls });
+const worker = require('./service/worker-service').create(db, redis, leaders, markets, paper, dashboard, { clockSync, controls });
 const tasks = require('./service/follow-task-service').create(db);
 let releaseLease;
 async.waterfall([

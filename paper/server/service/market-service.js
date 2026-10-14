@@ -108,7 +108,10 @@ function create(db, redis, dependencies) {
       metadata.set(condition, value);
       if (raw.ao === true) states.set(condition, { observedAt: Date.now() });
       else { states.delete(condition); states.forEach(function (state, key) { if (state.condition === condition) states.delete(key); }); }
-      db.query("INSERT INTO paper_markets(id,raw) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET raw=EXCLUDED.raw || jsonb_build_object('gamma',COALESCE(paper_markets.raw->'gamma','{}'::jsonb)),\"updatedAt\"=NOW()", [condition, JSON.stringify(raw)], function (error) { finish(error, value); });
+      finish(null, value);
+      setImmediate(function () {
+        db.query("INSERT INTO paper_markets(id,raw) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET raw=EXCLUDED.raw || jsonb_build_object('gamma',COALESCE(paper_markets.raw->'gamma','{}'::jsonb)),\"updatedAt\"=NOW()", [condition, JSON.stringify(raw)], function (error) { if (error) health.error = error.message; });
+      });
     });
   }
   function isExecutable(signal) { return !unavailable.has(signal.condition) && !unavailable.has(signal.token); }
@@ -122,7 +125,9 @@ function create(db, redis, dependencies) {
       if (!raw) return callback(new Error('Market metadata temporarily unavailable'));
       if (raw.closed === true) return callback(new Error('Market is closed'));
       if (raw.acceptingOrders !== true || raw.active !== true || raw.closed !== false) return callback(new Error('Market is temporarily not accepting orders'));
-      saveSchedule(raw, function (error) { if (!error) states.set(signal.token, { observedAt: Date.now(), condition: signal.condition }); callback(error); });
+      states.set(signal.token, { observedAt: Date.now(), condition: signal.condition });
+      callback();
+      setImmediate(function () { saveSchedule(raw, function (error) { if (error) health.error = error.message; }); });
     });
   }
   function prepareLookup(signal, callback) {

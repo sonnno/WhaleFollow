@@ -26,126 +26,92 @@ function create(db, markets, options) {
     }, callback);
   }
   function copy(signal, callback) {
-    let quote = null, preparationError = null, prepareMs = 0;
-    async.waterfall([
-      function (next) {
-        if (signal.historical || (!signal.active && signal.side === 'BUY') || signal.pausedAtDiscovery) return next();
-        const began = performance.now();
-        markets.prepare(signal, function (err, value) { prepareMs = performance.now() - began; preparationError = err; quote = value; next(); });
-      },
-      function (next) {
-        db.transaction(function (tx, done) {
-          let account, position, order, fill, settings, currentLeader, currentMarket, previousOrder, currentTask, sourceSpent = '0', queuedJob, sharedCash, ownPositionCost = '0', saleBaseline = null, sourceSold = '0';
-          const positionId = signal.wallet + ':' + signal.token;
-          async.waterfall([
-            function (step) { store.read(tx, signal, step); },
-            function (context, step) {
-              if (context.taskDeleted) return done(null, { taskDeleted: true, retry: false });
-              const claimed = context.claimed;
-              if (!claimed) return step(new Error('Order claim missing'));
-              if (!claimed.inserted && claimed.status !== 'WAITING') return done(null, { duplicate: true, order: claimed });
-              account = context.account; position = context.position; currentLeader = context.leader;
-              currentTask = context.task; currentMarket = context.market; queuedJob = context.job; settings = context.settings || {};
-              previousOrder = claimed.inserted ? null : claimed;
-              if (options.controls) options.controls.observe(context);
-              const control = options.controls && options.controls.get(signal.wallet);
-              if (control) { currentLeader = control.leader; settings = control.settings; }
-              if (!signal.title && currentMarket && currentMarket.raw && currentMarket.raw.gamma && currentMarket.raw.gamma.question) signal.title = currentMarket.raw.gamma.question;
-              step(null, [{ spent: context.spent, saleBaseline: context.saleBaseline, soldQuantity: context.soldQuantity, sharedCash: context.sharedCash, positionCost: context.positionCost }]);
-            },
-            function (rows, step) {
-              sourceSpent = rows[0] ? rows[0].spent : '0';
-              saleBaseline = rows[0] && rows[0].saleBaseline || null; sourceSold = rows[0] && rows[0].soldQuantity || '0';
-              sharedCash = rows[0] ? rows[0].sharedCash : account.cash; ownPositionCost = rows[0] ? rows[0].positionCost : '0';
-              order = { id: signal.id, sourceId: signal.sourceId, wallet: signal.wallet, token: signal.token, condition: signal.condition, side: signal.side, status: 'SKIPPED', reason: '', quantity: '0', gross: '0', fee: '0', details: { signal, config: signal.config || config, detectedAt: previousOrder ? previousOrder.details.detectedAt : new Date().toISOString(), lastAttemptAt: new Date().toISOString() } };
-              if (previousOrder) order.createdAt = previousOrder.createdAt;
-              order.details.timings = { prepareMs: Math.round(prepareMs), origin: signal.origin || 'rest' };
-              const executionConfig = currentTask ? rules.executionConfig(currentTask, signal.config || config) : signal.config || config;
-              order.details.config = executionConfig;
-              if (currentTask) order.details.followTask = { generation: currentTask.generation, fundingMode: currentTask.fundingMode, copyPercent: currentTask.copyPercent, allocation: currentTask.allocation, maxOrderAmount: currentTask.maxOrderAmount };
-              order.details.sourceAmount = str(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount);
-              if (quote && markets.latestQuote) quote = markets.latestQuote(signal, quote);
-              let reason = signal.historical ? 'HISTORICAL' : signal.pausedAtDiscovery ? 'PAUSED_AT_DISCOVERY' : (!signal.active && signal.side === 'BUY') ? 'LEADER_INACTIVE' : settings.pauseAll ? 'PAUSED' : settings.pauseBuys && signal.side === 'BUY' ? 'BUYS_PAUSED' : preparationError ? preparationError.message : !quote ? 'QUOTE_MISSING' : (markets.isFreshQuote ? !markets.isFreshQuote(quote) : Date.now() - quote.book.observedAt > config.bookMaxAgeMs) ? 'STALE_BOOK' : '';
-              if (signal.side === 'BUY') reason = rules.buyBlocked(signal, currentTask, queuedJob) || reason;
-              if (!reason && (!Number.isInteger(signal.outcomeIndex) || signal.outcomeIndex < 0 || signal.outcomeIndex > 1)) reason = 'UNSUPPORTED_OR_UNKNOWN_OUTCOME';
-              if (!reason && signal.side === 'BUY' && (!currentLeader || !currentLeader.active)) reason = 'LEADER_CURRENTLY_INACTIVE';
-              if (!reason && signal.side === 'BUY' && currentLeader && signal.timestamp < Math.ceil(new Date(currentLeader.joinedAt).getTime() / 1000)) reason = 'BEFORE_CURRENT_JOIN';
-              if (signal.side === 'SELL' && (!position || D(position.quantity).lte(0))) reason = 'NO_OWN_POSITION';
-              if (signal.side === 'SELL' && !saleBaseline && (signal.beforeInventory === null || signal.beforeInventory === undefined || D(signal.beforeInventory).lte(0))) reason = 'LEADER_INVENTORY_UNVERIFIED';
-              if (signal.side === 'SELL' && saleBaseline && position && Number(saleBaseline.positionCycle) !== Number(position.cycle)) reason = 'SOURCE_SELL_FROM_OLD_POSITION_CYCLE';
-              if (markets.isExecutable && !markets.isExecutable(signal)) reason = 'MARKET_NOT_EXECUTABLE';
-              if (currentMarket && currentMarket.resolution.status === 'resolved') reason = 'MARKET_ALREADY_RESOLVED';
-              if (reason) { order.reason = reason; return step(null, false); }
-              let target;
-              try {
-                if (signal.side === 'BUY' && D(account.cash).lte(0)) reason = 'INSUFFICIENT_CASH';
-                if (signal.side === 'BUY' && currentTask && currentTask.fundingMode === 'dedicated' && D(currentTask.cash).lte(0)) reason = 'TASK_FUNDS_EXHAUSTED';
-                if (signal.side === 'BUY' && currentTask && currentTask.fundingMode === 'shared' && D(sharedCash).lte(0)) reason = 'SHARED_FUNDS_EXHAUSTED';
-                if (signal.side === 'BUY' && currentTask && D(currentTask.allocation).minus(ownPositionCost).lte(0)) reason = 'TASK_BUDGET_LIMIT';
-                if (signal.side === 'BUY' && currentTask && currentTask.maxOrderAmount != null && D(currentTask.maxOrderAmount).minus(sourceSpent).lte('0.000000000000000001')) reason = 'ORDER_AMOUNT_LIMIT';
-                if (!reason) {
-                  if (signal.side === 'BUY') order.details.targetAmount = str(simulation.buyAmount(signal, executionConfig));
-                  if (signal.side === 'SELL') {
-                    if (!saleBaseline && D(sourceSold).isZero()) saleBaseline = { leaderQuantity: str(signal.beforeInventory), ownQuantity: position.quantity, positionCycle: position.cycle, sourceOffset: str(D(signal.cumulativeSize === undefined ? signal.size : signal.cumulativeSize).minus(signal.size).clamp(0,Infinity)) };
-                    if (saleBaseline) {
-                      order.details.saleBaseline = saleBaseline;
-                      const cumulative = signal.cumulativeSize === undefined ? D(sourceSold).mul(saleBaseline.leaderQuantity).div(saleBaseline.ownQuantity).plus(signal.size) : D(signal.cumulativeSize).minus(saleBaseline.sourceOffset || 0);
-                      target = str(D(saleBaseline.ownQuantity).mul(cumulative.div(saleBaseline.leaderQuantity).clamp(0,1)).minus(sourceSold).clamp(0, position.quantity));
-                    } else target = simulation.saleQuantity(position.quantity, signal.size, signal.beforeInventory);
-                  }
-                  if (signal.side === 'SELL' && D(target).lte(0)) reason = 'SOURCE_SELL_ALREADY_SATISFIED';
-                  else {
-                    fill = simulation.execute(signal, quote.book, quote.metadata, { ...executionConfig, availableCash: currentTask ? rules.availableCash(account, currentTask, sourceSpent, sharedCash, ownPositionCost) : account.cash }, target);
-                    if (D(fill.quantity).lte(0)) reason = fill.reason || 'NO_EXECUTABLE_DEPTH';
-                    else if (D(fill.gross).lte(0) || D(fill.cash).lte(0)) reason = signal.side === 'BUY' ? 'INSUFFICIENT_CASH' : 'BELOW_ACCOUNTING_PRECISION';
-                  }
-                }
-              } catch (error) { reason = error.message; }
-              order.reason = reason;
-              step(null, !reason);
-            },
-            function (executable, step) {
-              if (!executable) {
-                const terminal = ['TASK_PAUSED', 'TASK_STOPPED', 'TASK_GENERATION_CHANGED', 'TASK_CONTROL_CANCELLED', 'TASK_FUNDS_EXHAUSTED', 'SHARED_FUNDS_EXHAUSTED', 'TASK_BUDGET_LIMIT', 'ORDER_AMOUNT_LIMIT', 'HISTORICAL', 'PAUSED_AT_DISCOVERY', 'LEADER_INACTIVE', 'PAUSED', 'BUYS_PAUSED', 'LEADER_CURRENTLY_INACTIVE', 'BEFORE_CURRENT_JOIN', 'NO_OWN_POSITION', 'LEADER_INVENTORY_UNVERIFIED', 'SOURCE_SELL_FROM_OLD_POSITION_CYCLE', 'SOURCE_SELL_ALREADY_SATISFIED', 'INSUFFICIENT_CASH', 'BELOW_ACCOUNTING_PRECISION', 'MARKET_NOT_EXECUTABLE', 'MARKET_ALREADY_RESOLVED', 'Market is closed'];
-                if (!terminal.includes(order.reason)) order.status = 'WAITING';
-                return tx.save('Order', order, function (err) { step(err, order); });
-              }
-              if (!position) position = { id: positionId, wallet: signal.wallet, token: signal.token, condition: signal.condition, title: signal.title, outcomeIndex: signal.outcomeIndex, quantity: '0', cost: '0', realized: '0', cycleRealized: '0', cycle: 1 };
-              else if (D(position.quantity).isZero() && signal.side === 'BUY') { position.cycle++; position.cycleRealized = '0'; }
-              if (signal.side === 'BUY') position.fundingMode = currentTask ? currentTask.fundingMode : 'shared';
-              position.outcomeIndex = signal.outcomeIndex;
-              if (signal.side === 'BUY') {
-                Object.assign(position, accounting.buy(position, fill));
-                account.cash = str(D(account.cash).minus(fill.cash));
-              } else {
-                const sold = accounting.sell(position, fill);
-                order.details.realizedProfit = sold.profit;
-                order.details.releasedCost = sold.released;
-                Object.assign(position, sold);
-                account.cash = str(D(account.cash).plus(fill.cash));
-                account.realized = str(D(account.realized).plus(sold.profit));
-              }
-              account.fees = str(D(account.fees).plus(fill.fee));
-              if (currentTask) { if (currentTask.fundingMode === 'dedicated') currentTask.cash = str(D(currentTask.cash).plus(signal.side === 'BUY' ? D(fill.cash).negated() : fill.cash)); currentTask.fees = str(D(currentTask.fees).plus(fill.fee)); if (signal.side === 'SELL') { currentTask.realized = str(D(currentTask.realized).plus(order.details.realizedProfit)); } }
-              order.status = fill.partial ? 'PARTIAL' : 'FILLED';
-              order.details.positionCycle = position.cycle;
-              Object.assign(order, { quantity: fill.quantity, gross: fill.gross, fee: fill.fee });
-              order.details.quote = quote;
-              order.details.remaining = fill.remaining;
-              order.details.feeAccounting = 'Virtual fee debited in cash equivalent';
-              Object.assign(order.details.timings, require('../lib/execution-clock').stamp(signal));
-              order.details.timings.quoteSource = quote.quoteSource || 'prepared';
-              order.details.timings.dispatchMode = signal.dispatchMode || 'recovery';
-              order.details.timings.persistenceVersion = 2;
-              store.commit(tx, account, currentTask, position, order, fill, function (err) { step(err, order); });
-            }
-          ], function (err, value) { done(err, { order: value, retry: !!value && value.status === 'WAITING', retryAfterMs: preparationError && preparationError.retryAfterMs || 0, fill: fill && value && ['FILLED', 'PARTIAL'].includes(value.status) ? fill : null }); });
-        }, next);
-      }
-    ], function (err, result) {
-      if (!err && result && result.fill && !result.duplicate) markets.consume(signal.token, signal.side, result.fill.fills);
-      callback(err, result);
-    });
+    const controls = options.controls;
+    let attempts = 0;
+    function skipped(reason) {
+      const order = { id: signal.id, sourceId: signal.sourceId, wallet: signal.wallet, token: signal.token, condition: signal.condition, side: signal.side, status: 'SKIPPED', reason, quantity: '0', gross: '0', fee: '0', details: { signal, sourceAmount: signal.sourceAmount, attempts, config: signal.config || config, timings: { origin: signal.origin || 'websocket' } } };
+      db.transaction(function (tx, done) {
+        async.waterfall([
+          function (next) { tx.query('SELECT id FROM paper_accounts WHERE id=$1 FOR UPDATE', ['paper'], function (err) { next(err); }); },
+          function (next) { tx.query('INSERT INTO paper_orders(id,"sourceId",wallet,token,condition,side,status,reason,details) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb WHERE EXISTS(SELECT 1 FROM paper_follow_tasks WHERE id=$3 AND generation=$10) ON CONFLICT(id) DO NOTHING', [order.id,order.sourceId,order.wallet,order.token,order.condition,order.side,order.status,order.reason,JSON.stringify(order.details),Number(signal.followGeneration || 0)], function (err) { next(err); }); }
+        ], done);
+      }, function (err) { callback(err, { order, fill: null, retry: false }); });
+    }
+    function attempt() {
+      attempts++;
+      const state = controls && controls.get(signal.wallet);
+      const blocked = !state ? 'EXECUTION_STATE_UNAVAILABLE' : signal.historical ? 'HISTORICAL' : state.settings.pauseAll ? 'PAUSED' : signal.side === 'BUY' && state.settings.pauseBuys ? 'BUYS_PAUSED' : signal.side === 'BUY' && !state.leader.active ? 'LEADER_INACTIVE' : signal.side === 'BUY' ? rules.buyBlocked(signal, state.task) : '';
+      if (blocked) return skipped(blocked);
+      const began = performance.now();
+      markets.prepare(signal, function (error, quote) {
+        let fill, executionConfig, executionTask;
+        if (!error) {
+          try {
+            if (markets.latestQuote) quote = markets.latestQuote(signal, quote);
+            if (!quote) throw new Error('QUOTE_MISSING');
+            if (Number.isInteger(quote.outcomeIndex)) signal.outcomeIndex = quote.outcomeIndex;
+            if (!Number.isInteger(signal.outcomeIndex) || signal.outcomeIndex < 0 || signal.outcomeIndex > 1) throw new Error('UNSUPPORTED_OR_UNKNOWN_OUTCOME');
+            // Refresh only the memory snapshot after asynchronous preparation.
+            const current = controls.get(signal.wallet);
+            if (!current) throw new Error('EXECUTION_STATE_UNAVAILABLE');
+            if (signal.side === 'BUY' && (current.settings.pauseAll || current.settings.pauseBuys || !current.leader.active || rules.buyBlocked(signal, current.task))) throw new Error('BUY_PAUSED');
+            executionTask = current.task;
+            executionConfig = current.task ? rules.executionConfig(current.task, signal.config || config) : signal.config || config;
+            const available = current.task ? rules.availableCash(current.account, current.task, '0', current.sharedCash, current.positionCost) : current.account.cash;
+            const position = current.positions && current.positions[signal.token];
+            const target = signal.side === 'SELL' ? str(D(signal.size).mul(executionConfig.copyRatio || 1).clamp(0, position ? position.quantity : 0)) : undefined;
+            fill = simulation.execute(signal, quote.book, quote.metadata, { ...executionConfig, availableCash: available }, target);
+            if (D(fill.quantity).lte(0) || D(fill.gross).lte(0) || D(fill.cash).lte(0)) throw new Error(fill.reason || 'NO_EXECUTABLE_DEPTH');
+            controls.reserve(signal, fill);
+            markets.consume(signal.token, signal.side, fill.fills);
+          } catch (failure) { error = failure; }
+        }
+        if (error) return attempts < 3 ? attempt() : skipped(error.message);
+        const order = { id: signal.id, sourceId: signal.sourceId, wallet: signal.wallet, token: signal.token, condition: signal.condition, side: signal.side, status: fill.partial ? 'PARTIAL' : 'FILLED', reason: '', quantity: fill.quantity, gross: fill.gross, fee: fill.fee,
+          details: { signal, sourceAmount: signal.sourceAmount, attempts, config: executionConfig, quote, remaining: fill.remaining, feeAccounting: 'Virtual fee debited in cash equivalent', timings: { ...require('../lib/execution-clock').stamp(signal), origin: signal.origin || 'websocket', prepareMs: Math.round(performance.now() - began), quoteSource: quote.quoteSource || 'prepared', dispatchMode: 'immediate', persistenceVersion: 3 } } };
+        if (executionTask) order.details.followTask = { generation: executionTask.generation, fundingMode: executionTask.fundingMode, copyPercent: executionTask.copyPercent, allocation: executionTask.allocation, maxOrderAmount: executionTask.maxOrderAmount };
+        // The fill is already computed and the book consumed. Database work below
+        // records this result; failures here must never initiate another purchase.
+        let writes = 0;
+        function record() {
+          writes++;
+          persistFill(signal, order, fill, function (err, result) {
+            if (err && writes < 3) return record();
+            if (err) { err.executedOrder = { order, fill }; controls.complete(signal.id, true, true); }
+            else controls.complete(signal.id, result && (result.duplicate || result.taskDeleted));
+            callback(err, result);
+          });
+        }
+        record();
+      });
+    }
+    attempt();
+  }
+  function persistFill(signal, order, fill, callback) {
+    db.transaction(function (tx, done) {
+      async.waterfall([
+        function (next) { store.read(tx, signal, next); },
+        function (context, next) {
+          if (context.taskDeleted) return next(new Error('Task deleted before executed result was recorded'));
+          if (!context.claimed || !context.claimed.inserted && context.claimed.status !== 'WAITING') return done(null, { duplicate: true, retry: false });
+          const account = context.account, task = context.task;
+          const executedTask = order.details.followTask;
+          if (executedTask && (!task || task.generation !== executedTask.generation || task.fundingMode !== executedTask.fundingMode)) return next(new Error('Task funding or generation changed before result was recorded'));
+          if (signal.side === 'BUY' && D(fill.cash).gt(task ? rules.availableCash(account, task, context.spent || '0', context.sharedCash, context.positionCost) : account.cash)) return next(new Error('Funds changed before paper result was recorded'));
+          let position = context.position || { id: signal.wallet + ':' + signal.token, wallet: signal.wallet, token: signal.token, condition: signal.condition, title: signal.title || '', outcomeIndex: signal.outcomeIndex, quantity: '0', cost: '0', realized: '0', cycleRealized: '0', cycle: 1 };
+          if (D(position.quantity).isZero() && signal.side === 'BUY' && context.position) { position.cycle++; position.cycleRealized = '0'; }
+          try {
+            if (signal.side === 'BUY') { position.fundingMode = task ? task.fundingMode : 'shared'; Object.assign(position, accounting.buy(position, fill)); account.cash = str(D(account.cash).minus(fill.cash)); }
+            else { const sold = accounting.sell(position, fill); Object.assign(position, sold); order.details.realizedProfit = sold.profit; order.details.releasedCost = sold.released; account.cash = str(D(account.cash).plus(fill.cash)); account.realized = str(D(account.realized).plus(sold.profit)); }
+          } catch (failure) { return next(failure); }
+          account.fees = str(D(account.fees).plus(fill.fee)); position.outcomeIndex = signal.outcomeIndex;
+          if (task) { if (task.fundingMode === 'dedicated') task.cash = str(D(task.cash).plus(signal.side === 'BUY' ? D(fill.cash).negated() : fill.cash)); task.fees = str(D(task.fees).plus(fill.fee)); task.realized = str(D(task.realized).plus(order.details.realizedProfit || 0)); }
+          order.details.positionCycle = position.cycle;
+          store.commit(tx, account, task, position, order, fill, function (err) { next(err); });
+        },
+        function (next) { tx.query('INSERT INTO paper_source_trades(id,wallet,token,condition,side,timestamp,quantities,processed,budget,raw) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$7::jsonb,$8,$9::jsonb) ON CONFLICT(id) DO NOTHING', [signal.sourceId, signal.wallet, signal.token, signal.condition, signal.side, String(signal.timestamp), JSON.stringify({ [signal.price]: signal.size }), signal.sourceAmount, JSON.stringify({ trades: signal.raw || [] })], function (err) { next(err); }); }
+      ], function (err) { done(err, { order, fill, retry: false }); });
+    }, callback);
   }
   function settle(condition, resolution, callback) {
     if (resolution.status !== 'resolved' || !Array.isArray(resolution.payouts)) return callback(null, { pending: true });

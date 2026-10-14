@@ -27,3 +27,27 @@ test('notification invalidation, expired cache and DB failure fall back instead 
   f.controls.refresh(function () {}); f.reads.shift()(null, rows); f.controls.invalidate(); assert.equal(f.controls.get(wallet), null);
   f.controls.refresh(function () {}); f.reads.shift()(new Error('DB unavailable')); assert.equal(f.controls.get(wallet), null);
 });
+
+test('in-flight fills reserve shared and dedicated cash before persistence and cannot be overwritten by a background read', function () {
+  const f = fixture(); f.controls.refresh(function () {});
+  f.reads.shift()(null, [{ account: { cash: '100' }, sharedCash: '40', settings: {}, roster: [
+    { leader: { id: 'a' }, task: { fundingMode: 'dedicated', cash: '60' }, positions: {}, positionCost: '0' },
+    { leader: { id: 'b' }, task: { fundingMode: 'shared' }, positions: {}, positionCost: '0' }
+  ] }]);
+  f.controls.refresh(function () {}); const old = f.reads.shift();
+  const fill = { quantity: '20', gross: '10', cash: '10', fee: '0' };
+  f.controls.reserve({ id: 'same', wallet: 'a', token: 't', side: 'BUY' }, fill);
+  f.controls.reserve({ id: 'same', wallet: 'b', token: 't', side: 'BUY' }, fill);
+  old(null, [{ account: { cash: '100' }, sharedCash: '40', settings: {}, roster: [] }]);
+  assert.equal(f.controls.get('a').account.cash, '80'); assert.equal(f.controls.get('a').task.cash, '50'); assert.equal(f.controls.get('b').sharedCash, '30');
+  f.controls.complete('same'); f.controls.refresh(function () {}); assert.equal(f.reads.length, 0, 'second execution is still being recorded');
+  f.controls.complete('same'); assert.equal(f.reads.length, 1, 'refresh starts only after both results finish');
+});
+
+test('an unrecorded executed fill halts new execution without releasing its funds', function () {
+  const f = fixture(); f.controls.refresh(function () {});
+  f.reads.shift()(null, [{ account: { cash: '10' }, sharedCash: '10', settings: {}, roster: [{ leader: { id: wallet }, task: { fundingMode: 'shared' }, positions: {}, positionCost: '0' }] }]);
+  f.controls.reserve({ id: 'o', wallet, token: 't', side: 'BUY' }, { quantity: '10', gross: '5', cash: '5', fee: '0' });
+  f.controls.complete('o', true, true); f.controls.refresh(function () {});
+  assert.equal(f.controls.get(wallet), null); assert.equal(f.reads.length, 0, 'cannot reload the old cash over an unrecorded result');
+});
