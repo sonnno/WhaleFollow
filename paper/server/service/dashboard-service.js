@@ -29,6 +29,12 @@ function create(db) {
       t.wins::text "settledWins",t.losses::text "settledLosses",t.profit::text "settledProfit",t.revenue::text "settlementRevenue",
       t.cost::text "settledCost",t.count "settledCount",t.winning "winningCount",t.losing "losingCount",
       b.amount::text wagered,s.amount::text "saleRevenue",(a.realized-t.profit)::text "saleProfit",p.cost::text "pendingCost",p.markets "pendingMarkets",
+      (jsonb_build_array(
+        jsonb_build_object('id','total','name','总钱包','cash',a.cash::text,'warning',(SELECT value FROM paper_settings WHERE id='balance-warning:total')),
+        jsonb_build_object('id','shared','name','公共钱包','cash',(a.cash-COALESCE((SELECT SUM(cash) FROM paper_follow_tasks WHERE "fundingMode"='dedicated'),0))::text,'warning',(SELECT value FROM paper_settings WHERE id='balance-warning:shared'))
+      ) || COALESCE((SELECT jsonb_agg(jsonb_build_object('id',f.id,'name',COALESCE(l.name,f.id)||' · 独立钱包','cash',f.cash::text,'warning',w.value) ORDER BY f."createdAt",f.id)
+        FROM paper_follow_tasks f LEFT JOIN paper_leaders l ON l.id=f.id LEFT JOIN paper_settings w ON w.id='balance-warning:dedicated:'||f.id AND (w.value->>'taskCreatedAt')::timestamptz=f."createdAt"
+        WHERE f."fundingMode"='dedicated'),'[]'::jsonb)) AS "walletBalances",
       COALESCE((SELECT jsonb_agg(row_to_json(h) ORDER BY h."createdAt") FROM (
         SELECT "createdAt",(SUM(profit) OVER(ORDER BY "createdAt"))::text "settledProfit" FROM (
           SELECT "createdAt",SUM(profit) profit FROM settled GROUP BY "createdAt"

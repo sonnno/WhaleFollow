@@ -88,14 +88,6 @@ export default function App() {
     const interval = setInterval(load, 10000);
     return () => { requestVersion.current += 1; stream.close(); clearInterval(interval); pendingRequests.current.clear(); };
   }, [load, user]);
-  useEffect(() => {
-    if (detail?.summary?.status !== 'waiting') return;
-    const id = detail.bet.id; let cancelled = false;
-    const timer = setInterval(() => request('/paper-orders/' + encodeURIComponent(id), null, (err, value) => {
-      if (!err && !cancelled) setDetail(prior => prior?.bet?.id === id ? { ...value, bet: prior.bet } : prior);
-    }), 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [detail?.bet?.id, detail?.summary?.status]);
   if (user === undefined) return <main className="loading">正在连接后台…</main>;
   if (!user) return <Login onLogin={setUser}/>;
   const cashStats = data['/cash-summary'], settings = data['/settings'], health = data['/health'];
@@ -116,6 +108,11 @@ export default function App() {
           <div><span>未结算笔数</span><strong>{cashStats.pendingBets}<em> 笔</em></strong></div>
           <div><span>未结算投入 · USDT</span><strong>{money(cashStats.pendingCost)}</strong><small>剩余持仓的实际成本，含费用</small></div>
         </div>
+        <section className="wallet-balances"><h2>钱包余额与预警</h2>
+          {(cashStats.walletBalances || []).some(row => row.warning?.insufficient === true) && <p className="wallet-balance-alert" role="alert">{cashStats.walletBalances.filter(row => row.warning?.insufficient === true).map(row => row.name).join('、')}：下单余额不足。</p>}
+          <Table rows={cashStats.walletBalances || []} columns={[["name","账户"],["cash","可用现金 · USDT",money],["warning","余额预警",value => value?.insufficient === true ? <span className="negative">下单余额不足</span> : <span className="note">未触发预警</span>]]}/>
+          <p className="note">预警由下单时余额不足触发；该账户下单成功后解除。余额不足的尝试不生成订单。</p>
+        </section>
         <p className="note">总盈亏包含已卖出及已结算的实际盈亏，已扣对应手续费。下面按最终结算记录统计，不计未结算浮盈。</p>
         <section><h2>已结算净盈亏历史</h2><Chart rows={cashStats.history} field="settledProfit"/></section>
         <section><h2>按人员统计 · 已结算</h2><Table rows={cashStats.leaders} columns={[["name","人员"],["count","结算记录数"],["profit","结算净盈亏",pnl]]}/></section>
@@ -143,8 +140,8 @@ export default function App() {
         { label: '跟买金额', value: settings.config.copySizing === 'fixed_ratio' ? '按对方成交金额的 ' + money(Number(settings.config.copyRatio) * 100) + '% 买入，手续费另计' : '按被跟人员本人实际成交金额，1:1 等额买入' },
         { label: '虚拟本金', value: money(settings.config.initialCash) + ' USDT' },
         { label: '跟单方式', value: '跟着买卖，按当前盘口模拟成交' },
-        { label: '暂时无法成交', value: '保留记录，自动重试' },
-        { label: '榜单更新间隔', value: settings.config.leaderboardSeconds / 60 + ' 分钟' }, { label: '交易查询间隔', value: settings.config.tradePollSeconds + ' 秒' },
+        { label: '暂时无法成交', value: '立即尝试，累计3次后结束；余额不足不生成订单' },
+        { label: '榜单更新间隔', value: settings.config.leaderboardSeconds / 60 + ' 分钟' }, { label: '交易通知', value: 'WebSocket实时推送，不补旧买单' },
         { label: '结算查询间隔', value: settings.config.settlementSeconds + ' 秒' }
       ]} columns={[["label", "设置"], ["value", "当前值"]]}/></section><section><h2>运行状态</h2><Table rows={[
         { label: '后台数据库', value: health?.database ? '已连接' : '未连接' },

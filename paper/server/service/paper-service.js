@@ -8,6 +8,7 @@ const config = require('../../config').paper;
 function create(db, markets, options) {
   options = options || {};
   const store = require('./paper-copy-store');
+  const warnings = options.warnings || require('./balance-warning-service').create(db);
   function initialize(callback) {
     db.transaction(function (tx, done) {
       async.waterfall([
@@ -27,8 +28,15 @@ function create(db, markets, options) {
   }
   function copy(signal, callback) {
     const controls = options.controls;
-    let attempts = 0;
+    let attempts = 0, fundsState, requiredCash, lastState;
     function skipped(reason) {
+      if (signal.side === 'BUY' && reason === 'ORDER_AMOUNT_BELOW_PRECISION') return callback(null, { order: null, fill: null, retry: false, reason, attempts });
+      if (signal.side === 'BUY' && reason === 'INSUFFICIENT_CASH') {
+        const state = fundsState || lastState;
+        const result = { order: null, fill: null, retry: false, insufficientFunds: true, attempts };
+        if (!state) return callback(null, result);
+        return warnings.mark(signal, state, requiredCash || simulation.buyAmount(signal, state.task ? rules.executionConfig(state.task, signal.config || config) : signal.config || config), function (err) { callback(err, result); });
+      }
       const order = { id: signal.id, sourceId: signal.sourceId, wallet: signal.wallet, token: signal.token, condition: signal.condition, side: signal.side, status: 'SKIPPED', reason, quantity: '0', gross: '0', fee: '0', details: { signal, sourceAmount: signal.sourceAmount, attempts, config: signal.config || config, timings: { origin: signal.origin || 'websocket' } } };
       db.transaction(function (tx, done) {
         async.waterfall([
@@ -39,9 +47,29 @@ function create(db, markets, options) {
     }
     function attempt() {
       attempts++;
+      fundsState = null;
       const state = controls && controls.get(signal.wallet);
+      if (state) lastState = state;
       const blocked = !state ? 'EXECUTION_STATE_UNAVAILABLE' : signal.historical ? 'HISTORICAL' : state.settings.pauseAll ? 'PAUSED' : signal.side === 'BUY' && state.settings.pauseBuys ? 'BUYS_PAUSED' : signal.side === 'BUY' && !state.leader.active ? 'LEADER_INACTIVE' : signal.side === 'BUY' ? rules.buyBlocked(signal, state.task) : '';
       if (blocked) return skipped(blocked);
+      function cashCap(current) {
+        let cap = D(Infinity);
+        if (current.task) {
+          if (current.task.allocation != null) cap = cap.clamp(0, D(current.task.allocation).minus(current.positionCost || 0).clamp(0, Infinity));
+          if (current.task.maxOrderAmount != null) cap = cap.clamp(0, current.task.maxOrderAmount);
+        }
+        return cap;
+      }
+      function insufficient(current, required) {
+        const pool = current.task && current.task.fundingMode === 'dedicated' ? current.task.cash : current.sharedCash;
+        if (D(current.account.cash).clamp(0, D(pool).clamp(0, Infinity)).lt(required)) { fundsState = current; requiredCash = required; return true; }
+        return false;
+      }
+      if (signal.side === 'BUY') {
+        const sizing = state.task ? rules.executionConfig(state.task, signal.config || config) : signal.config || config;
+        const required = D(simulation.buyAmount(signal, sizing)).clamp(0, cashCap(state));
+        if (insufficient(state, required)) return attempts < 3 ? attempt() : skipped('INSUFFICIENT_CASH');
+      }
       const began = performance.now();
       markets.prepare(signal, function (error, quote) {
         let fill, executionConfig, executionTask;
@@ -54,14 +82,28 @@ function create(db, markets, options) {
             // Refresh only the memory snapshot after asynchronous preparation.
             const current = controls.get(signal.wallet);
             if (!current) throw new Error('EXECUTION_STATE_UNAVAILABLE');
+            lastState = current;
             if (signal.side === 'BUY' && (current.settings.pauseAll || current.settings.pauseBuys || !current.leader.active || rules.buyBlocked(signal, current.task))) throw new Error('BUY_PAUSED');
             executionTask = current.task;
             executionConfig = current.task ? rules.executionConfig(current.task, signal.config || config) : signal.config || config;
             const available = current.task ? rules.availableCash(current.account, current.task, '0', current.sharedCash, current.positionCost) : current.account.cash;
             const position = current.positions && current.positions[signal.token];
             const target = signal.side === 'SELL' ? str(D(signal.size).mul(executionConfig.copyRatio || 1).clamp(0, position ? position.quantity : 0)) : undefined;
+            if (signal.side === 'BUY') {
+              const cap = cashCap(current);
+              if (cap.lte(0)) throw new Error('TASK_BUDGET_LIMIT');
+              const desired = simulation.execute(signal, quote.book, quote.metadata, { ...executionConfig, availableCash: Infinity });
+              if (insufficient(current, D(desired.cash).clamp(0, cap))) throw new Error('INSUFFICIENT_CASH');
+            }
             fill = simulation.execute(signal, quote.book, quote.metadata, { ...executionConfig, availableCash: available }, target);
-            if (D(fill.quantity).lte(0) || D(fill.gross).lte(0) || D(fill.cash).lte(0)) throw new Error(fill.reason || 'NO_EXECUTABLE_DEPTH');
+            if (D(fill.quantity).lte(0) || D(fill.gross).lte(0) || D(fill.cash).lte(0)) {
+              if (signal.side === 'BUY' && fill.reason === 'INSUFFICIENT_CASH') {
+                const pool = D(current.account.cash).clamp(0, current.task && current.task.fundingMode === 'dedicated' ? current.task.cash : current.sharedCash);
+                if (cashCap(current).lt(pool)) throw new Error('ORDER_AMOUNT_BELOW_PRECISION');
+                fundsState = current; requiredCash = simulation.buyAmount(signal, executionConfig);
+              }
+              throw new Error(fill.reason || 'NO_EXECUTABLE_DEPTH');
+            }
             controls.reserve(signal, fill);
             markets.consume(signal.token, signal.side, fill.fills);
           } catch (failure) { error = failure; }
@@ -70,12 +112,13 @@ function create(db, markets, options) {
         const order = { id: signal.id, sourceId: signal.sourceId, wallet: signal.wallet, token: signal.token, condition: signal.condition, side: signal.side, status: fill.partial ? 'PARTIAL' : 'FILLED', reason: '', quantity: fill.quantity, gross: fill.gross, fee: fill.fee,
           details: { signal, sourceAmount: signal.sourceAmount, attempts, config: executionConfig, quote, remaining: fill.remaining, feeAccounting: 'Virtual fee debited in cash equivalent', timings: { ...require('../lib/execution-clock').stamp(signal), origin: signal.origin || 'websocket', prepareMs: Math.round(performance.now() - began), quoteSource: quote.quoteSource || 'prepared', dispatchMode: 'immediate', persistenceVersion: 3 } } };
         if (executionTask) order.details.followTask = { generation: executionTask.generation, fundingMode: executionTask.fundingMode, copyPercent: executionTask.copyPercent, allocation: executionTask.allocation, maxOrderAmount: executionTask.maxOrderAmount };
+        const balanceEvent = warnings.event(signal, executionTask, false);
         // The fill is already computed and the book consumed. Database work below
         // records this result; failures here must never initiate another purchase.
         let writes = 0;
         function record() {
           writes++;
-          persistFill(signal, order, fill, function (err, result) {
+          persistFill(signal, order, fill, balanceEvent, function (err, result) {
             if (err && writes < 3) return record();
             if (err) { err.executedOrder = { order, fill }; controls.complete(signal.id, true, true); }
             else controls.complete(signal.id, result && (result.duplicate || result.taskDeleted));
@@ -87,7 +130,7 @@ function create(db, markets, options) {
     }
     attempt();
   }
-  function persistFill(signal, order, fill, callback) {
+  function persistFill(signal, order, fill, balanceEvent, callback) {
     db.transaction(function (tx, done) {
       async.waterfall([
         function (next) { store.read(tx, signal, next); },
@@ -109,6 +152,7 @@ function create(db, markets, options) {
           order.details.positionCycle = position.cycle;
           store.commit(tx, account, task, position, order, fill, function (err) { next(err); });
         },
+        function (next) { warnings.write(tx, balanceEvent, next); },
         function (next) { tx.query('INSERT INTO paper_source_trades(id,wallet,token,condition,side,timestamp,quantities,processed,budget,raw) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$7::jsonb,$8,$9::jsonb) ON CONFLICT(id) DO NOTHING', [signal.sourceId, signal.wallet, signal.token, signal.condition, signal.side, String(signal.timestamp), JSON.stringify({ [signal.price]: signal.size }), signal.sourceAmount, JSON.stringify({ trades: signal.raw || [] })], function (err) { next(err); }); }
       ], function (err) { done(err, { order, fill, retry: false }); });
     }, callback);
