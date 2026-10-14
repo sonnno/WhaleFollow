@@ -6,7 +6,7 @@ const agent = require('../lib/network-agent');
 function create(db, redis, leaders, sources, markets, paper, dashboard, options) {
   options = options || {};
   const config = options.config || require('../../config').paper;
-  const health = { processId: process.pid, latencyVersion: 3,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
+  const health = { processId: process.pid, latencyVersion: 4,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
   let stopped = false, socket, reconnect, heartbeat, activityFailures = 0;
   const timers = [], locks = new Set(), walletBusy = new Set(), inventoryBusy = new Set(), walletPending = new Set(), lastPeriodic = new Map(), tokenQueues = new Map(), admitted = new Set();
   let trackedWallets = config.followWallets && config.followWallets.length ? new Set(config.followWallets) : null;
@@ -67,11 +67,20 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       dispatch(function (err) { locks.delete('dispatch'); report('dispatch', err); if (dispatchRequested) wakeDispatch(); });
     });
   }
-  sources.onSignal(function (_, signal) {
+  sources.onSignal(function (id, signal) {
     health.discoveredSignals = (health.discoveredSignals || 0) + 1;
     health.lastSignalAt = new Date().toISOString();
     if (signal) health.lastDiscoveryLagMs = Math.max(0, Date.parse(require('../lib/execution-clock').receipt().receivedAt) - signal.timestamp * 1000);
-    wakeDispatch();
+    if (!signal || signal.origin !== 'websocket' || stopped || admitted.size >= (options.maxInFlight || 8)) return wakeDispatch();
+    if (admitted.has(id)) return;
+    // Reserve before the async eligibility read so Redis cannot execute/retry
+    // this same intent while a direct admission still holds an older snapshot.
+    admitted.add(id); health.inFlight = admitted.size;
+    eligible(id, function (error, ready) {
+      if (!error && ready.length && !stopped) { const job = ready[0]; return admit({ ...job, payload: { ...job.payload, dispatchMode: 'direct' } }, true); }
+      admitted.delete(id); health.inFlight = admitted.size;
+      redis.del('paper:queued:' + id, function (releaseError) { report('direct-copy', error || releaseError); wakeDispatch(); });
+    });
   });
   function dispatch(callback) {
     db.query(`SELECT j.id FROM paper_outbox j WHERE j.status=$1 AND j.kind='copy'
@@ -92,6 +101,30 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
     });
   }
   const sharedBuys = async.queue(executeJob, 1);
+  function eligible(id, callback) {
+    db.query(`SELECT j.* FROM paper_outbox j WHERE j.id=$1 AND j.status='pending' AND j.kind='copy'
+      AND COALESCE((j.payload->>'retryAt')::bigint,0)<=$2 AND NOT EXISTS (
+      SELECT 1 FROM paper_outbox earlier WHERE earlier.status='pending'
+      AND earlier.kind IN ('copy','source-confirmation')
+      AND earlier.payload->>'wallet'=j.payload->>'wallet' AND earlier.payload->>'token'=j.payload->>'token'
+      AND (earlier."createdAt",earlier.id)<(j."createdAt",j.id)
+    )`, [id, Date.now()], callback);
+  }
+  function admit(job, reserved) {
+    if (stopped || !reserved && (admitted.has(job.id) || admitted.size >= (options.maxInFlight || 8))) return false;
+    admitted.add(job.id); health.inFlight = admitted.size;
+    const token = job.payload.token;
+    let queue = tokenQueues.get(token);
+    if (!queue) {
+      queue = async.queue(function (item, done) {
+        if (item.payload.side === 'BUY' && item.payload.fundingMode !== 'dedicated') return sharedBuys.push(item, done);
+        executeJob(item, done);
+      }, 1);
+      queue.drain(function () { tokenQueues.delete(token); });
+      tokenQueues.set(token, queue);
+    }
+    queue.push(job); return true;
+  }
   function executeJob(item, done) {
             if (stopped) { admitted.delete(item.id); return done(); }
             const began = performance.now();
@@ -120,31 +153,14 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
     if (admitted.size >= (options.maxInFlight || 8)) return callback();
     redis.rpop('paper:work', function (err, id) {
       if (err || !id) return callback(err);
-      db.one('Outbox', { where: { id } }, function (error, job) {
-        if (error || !job || job.status !== 'pending' || job.kind && job.kind !== 'copy') return callback(error);
-        if (Number(job.payload.retryAt || 0) > Date.now()) return redis.del('paper:queued:' + id, function (releaseError) { callback(releaseError); });
-        // Redis may still contain later deliveries admitted before an earlier retry.
-        db.query(`SELECT j.id FROM paper_outbox j WHERE j.id=$1 AND j.status='pending' AND NOT EXISTS (
-          SELECT 1 FROM paper_outbox earlier WHERE earlier.status='pending'
-          AND earlier.kind IN ('copy','source-confirmation')
-          AND earlier.payload->>'wallet'=j.payload->>'wallet' AND earlier.payload->>'token'=j.payload->>'token'
-          AND (earlier."createdAt",earlier.id)<(j."createdAt",j.id)
-        )`, [id], function (eligibilityError, ready) {
-        if (eligibilityError || !ready.length) return callback(eligibilityError);
-        if (admitted.has(id)) return callback();
-        admitted.add(id); health.inFlight = admitted.size;
-        const token = job.payload.token;
-        let queue = tokenQueues.get(token);
-        if (!queue) {
-          queue = async.queue(function (item, done) {
-            if (item.payload.side === 'BUY' && item.payload.fundingMode !== 'dedicated') return sharedBuys.push(item, done);
-            executeJob(item, done);
-          }, 1);
-          queue.drain(function () { tokenQueues.delete(token); });
-          tokenQueues.set(token, queue);
-        }
-        queue.push(job); callback();
-        });
+      if (admitted.has(id)) return callback();
+      if (stopped || admitted.size >= (options.maxInFlight || 8)) return redis.del('paper:queued:' + id, function (releaseError) { callback(releaseError); });
+      // Both direct and recovered delivery reserve before any asynchronous read.
+      admitted.add(id); health.inFlight = admitted.size;
+      eligible(id, function (eligibilityError, ready) {
+        if (!eligibilityError && ready.length && !stopped) { admit(ready[0], true); return callback(); }
+        admitted.delete(id); health.inFlight = admitted.size;
+        redis.del('paper:queued:' + id, function (releaseError) { callback(eligibilityError || releaseError); });
       });
     });
   }
@@ -231,6 +247,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       every('settlement', config.settlementSeconds, settle, true);
       every('schedule', 600, markets.schedules, true);
       every('market-enrich', 2, enrichment.run);
+      if (markets.refreshParameters) every('market-parameters', 10, markets.refreshParameters);
       if (sources.reconcile) every('source-reconcile', 5, sources.reconcile);
       every('equity', 2, snapshot, true);
       every('daily-report', 30, dailyReports.runDue, true);

@@ -23,6 +23,59 @@ function fixture(options) {
 }
 const signal = { condition: 'condition', token: 'token', outcomeIndex: 0 };
 
+test('healthy full-book WS snapshot executes after two seconds without any new REST request', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const f = fixture();
+  t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err);
+    f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'live', asks: [{ price: '0.6', size: '20' }], bids: [{ price: '0.5', size: '20' }] }));
+    now += 10000;
+    const reads = f.reads();
+    f.markets.prepare({ ...signal }, function (error, quote) {
+      assert.ifError(error); assert.equal(f.reads(), reads, 'healthy WS snapshot must bypass arbitrary age refresh');
+      assert.equal(quote.book.asks[0].price, '0.6'); assert.equal(quote.quoteSource, 'websocket-cache');
+      f.markets.stop(); done();
+    });
+  });
+});
+
+test('a disconnected market stream cannot execute an old WS snapshot', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const f = fixture();
+  t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err);
+    f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'live', asks: [{ price: '0.6', size: '20' }], bids: [] }));
+    now += 10000; const reads = f.reads(); f.markets.stop();
+    f.markets.prepare({ ...signal }, function (error, quote) {
+      assert.ifError(error); assert.ok(f.reads() > reads); assert.equal(quote.book.asks[0].price, '0.5'); done();
+    });
+  });
+});
+
+test('an open socket without traffic or PONG is not a live quote source', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const f = fixture(); t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err);
+    f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'live', asks: [{ price: '0.6', size: '20' }], bids: [] }));
+    now += 120000; const reads = f.reads();
+    f.markets.prepare({ ...signal }, function (error, quote) { assert.ifError(error); assert.ok(f.reads() > reads, 'silent half-open stream must refresh'); assert.equal(quote.book.asks[0].price, '0.5'); done(); });
+  });
+});
+
+test('PONG keeps a quiet unchanged full-book snapshot live without REST', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const f = fixture(); t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err);
+    f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'live', asks: [{ price: '0.6', size: '20' }], bids: [] }));
+    now += 120000; f.socket.emit('message', 'PONG'); const reads = f.reads();
+    f.markets.prepare({ ...signal }, function (error, quote) { assert.ifError(error); assert.equal(f.reads(), reads); assert.equal(quote.quoteSource, 'websocket-cache'); done(); });
+  });
+});
+
 test('execution joins an in-flight warm preparation without duplicate book or metadata HTTP', function (_, done) {
   const requests = [], callbacks = {};
   const markets = service.create({ query: function (_, __, cb) { cb(null, []); } }, { get: function (_, cb) { cb(null, null); }, set: function () {} }, { http: { request: function (_, route, __, cb) { requests.push(route); callbacks[route] = cb; } } });
@@ -32,6 +85,47 @@ test('execution joins an in-flight warm preparation without duplicate book or me
   callbacks['/book'](null, { asks: [{ price: '0.5', size: '10' }], bids: [], hash: 'warm-snapshot' });
   markets.consume('token','BUY',[{price:'0.5',quantity:'3'}]);
   callbacks['/clob-markets/condition'](null, { ao: true, t: [{ t: 'token' }, { t: 'other' }], fd: { r: 0, e: 1 } });
+});
+
+test('background refresh observes closure before the next cached execution', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const options = {}, f = fixture(options); t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err); now += 31000;
+    options.marketResponse = [{ conditionId: 'condition', closed: true }];
+    f.markets.refreshParameters(function (error) {
+      assert.match(error.message, /closed/); assert.equal(f.markets.isExecutable(signal), false); done();
+    });
+  });
+});
+
+test('background suspension invalidates cached acceptance for both outcomes', function (t, done) {
+  let now = Date.now(); t.mock.method(Date, 'now', function () { return now; });
+  const options = {}, f = fixture(options); t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err) {
+    assert.ifError(err);
+    f.markets.prepare({ ...signal, token: 'other' }, function (failure) {
+      assert.ifError(failure);
+      f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'live-token', asks: [{ price: '0.5', size: '20' }], bids: [] }));
+      now += 31000; options.marketResponse = [{ conditionId: 'condition', active: true, closed: false, acceptingOrders: false }];
+      f.markets.refreshParameters(function (error) {
+        assert.match(error.message, /not accepting/);
+        assert.equal(f.markets.latestQuote(signal, { book: { asks: [], bids: [], observedAt: now } }), null, 'invalid acceptance cannot fall back to an older prepared quote');
+        f.markets.prepare({ ...signal }, function (blocked) { assert.ok(blocked, 'cached acceptance on the other outcome must not survive suspension'); done(); });
+      });
+    });
+  });
+});
+
+test('latest local quote uses price changes and consumed depth instead of the prepared snapshot', function (t, done) {
+  const f = fixture(); t.after(function () { f.markets.stop(); });
+  f.markets.prepare({ ...signal }, function (err, prepared) {
+    assert.ifError(err);
+    f.socket.emit('message', JSON.stringify({ event_type: 'book', asset_id: 'token', hash: 'now', asks: [{ price: '0.6', size: '20' }], bids: [] }));
+    f.markets.consume('token', 'BUY', [{ price: '0.6', quantity: '3' }]);
+    const latest = f.markets.latestQuote(signal, prepared);
+    assert.equal(latest.book.asks[0].price, '0.6'); assert.equal(latest.book.asks[0].size, '17'); assert.equal(prepared.book.asks[0].price, '0.5'); done();
+  });
 });
 
 test('schedule refresh fetches each requested market and preserves its official deadline', function (_, done) {

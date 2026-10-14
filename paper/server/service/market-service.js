@@ -12,6 +12,10 @@ function create(db, redis, dependencies) {
   const books = new Map(), metadata = new Map(), tokens = new Set(), unavailable = new Set(), states = new Map();
   const metadataPending = new Map();
   const preparationPending = new Map();
+  const watchedSignals = new Map();
+  const streamId = require('node:crypto').randomUUID();
+  let connectionEpoch = 0;
+  let lastAliveAt = 0;
   let socket, stopped = false, reconnect, ping, resolutionListener;
   const health = { connected: false, lastMessage: null, error: null };
   function publish(token, book) {
@@ -22,7 +26,7 @@ function create(db, redis, dependencies) {
     health.lastMessage = new Date().toISOString();
     if (message.event_type === 'book') {
       const prior = books.get(message.asset_id);
-      publish(message.asset_id, prior && message.hash && message.hash === prior.hash ? { ...prior, observedAt: Date.now(), needsFullSnapshot: false } : { bids: message.bids || [], asks: message.asks || [], observedAt: Date.now(), version: message.hash || message.timestamp, hash: message.hash, needsFullSnapshot: false });
+      publish(message.asset_id, prior && message.hash && message.hash === prior.hash ? { ...prior, observedAt: Date.now(), needsFullSnapshot: false, streamEpoch: connectionEpoch, streamId } : { bids: message.bids || [], asks: message.asks || [], observedAt: Date.now(), version: message.hash || message.timestamp, hash: message.hash, needsFullSnapshot: false, streamEpoch: connectionEpoch, streamId });
     }
     if (message.event_type === 'price_change') (message.price_changes || []).forEach(function (change) {
       const book = books.get(change.asset_id);
@@ -31,7 +35,7 @@ function create(db, redis, dependencies) {
       const index = side.findIndex(function (row) { return D(row.price).eq(change.price); });
       if (index >= 0) side.splice(index, 1);
       if (D(change.size).gt(0)) side.push({ price: String(change.price), size: String(change.size) });
-      book.observedAt = Date.now(); book.version = change.hash || message.timestamp;
+      book.observedAt = Date.now(); book.version = change.hash || message.timestamp; book.streamEpoch = connectionEpoch; book.streamId = streamId;
       publish(change.asset_id, book);
     });
     if (message.event_type === 'tick_size_change') metadata.clear();
@@ -43,18 +47,26 @@ function create(db, redis, dependencies) {
   }
   function connect() {
     if (stopped) return;
-    socket = new Socket(config.marketWsUrl, { agent, handshakeTimeout: config.requestTimeoutMs });
+    const connection = new Socket(config.marketWsUrl, { agent, handshakeTimeout: config.requestTimeoutMs });
+    socket = connection;
     socket.on('open', function () {
+      if (stopped || socket !== connection) return connection.terminate();
+      connectionEpoch++;
+      lastAliveAt = Date.now();
       health.connected = true; health.error = null;
       if (tokens.size) socket.send(JSON.stringify({ type: 'market', assets_ids: [...tokens], custom_feature_enabled: true }));
       // A reconnected incremental stream needs fresh full books before execution.
       books.forEach(function (book) { book.observedAt = 0; book.needsFullSnapshot = true; });
       clearInterval(ping);
-      ping = setInterval(function () { if (socket.readyState === WebSocket.OPEN) socket.send('PING'); }, 10000);
+      ping = setInterval(function () {
+        if (socket.readyState !== WebSocket.OPEN) return;
+        if (Date.now() - lastAliveAt > 30000) { health.connected = false; health.error = 'Market stream heartbeat timed out'; return socket.terminate(); }
+        socket.send('PING');
+      }, 10000);
     });
-    socket.on('message', function (data) { if (String(data) === 'PONG') return; try { const values = JSON.parse(String(data)); (Array.isArray(values) ? values : [values]).forEach(apply); } catch (_) { health.error = 'Invalid WS payload'; } });
-    socket.on('error', function (err) { health.error = err.message; });
-    socket.on('close', function () { health.connected = false; clearInterval(ping); if (!stopped) reconnect = setTimeout(connect, 3000); });
+    socket.on('message', function (data) { if (stopped || socket !== connection) return; lastAliveAt = Date.now(); if (String(data) === 'PONG') return; try { const values = JSON.parse(String(data)); (Array.isArray(values) ? values : [values]).forEach(apply); } catch (_) { health.error = 'Invalid WS payload'; } });
+    socket.on('error', function (err) { if (socket === connection) health.error = err.message; });
+    socket.on('close', function () { if (socket !== connection) return; health.connected = false; clearInterval(ping); if (!stopped) reconnect = setTimeout(connect, 3000); });
   }
   function subscribe(token) {
     if (tokens.has(token)) return;
@@ -64,7 +76,7 @@ function create(db, redis, dependencies) {
   function getBook(token, callback, force) {
     subscribe(token);
     let previous = books.get(token);
-    if (!force && previous && !previous.needsFullSnapshot && Date.now() - previous.observedAt <= config.bookMaxAgeMs) return callback(null, JSON.parse(JSON.stringify(previous)));
+    if (!force && usableBook(previous)) return callback(null, JSON.parse(JSON.stringify(previous)));
     function fetch() { transport.request(config.clobUrl, '/book', { token_id: token }, function (err, raw) {
       if (err) return callback(err);
       if (!Array.isArray(raw.bids) || !Array.isArray(raw.asks)) return callback(new Error('Invalid order book'));
@@ -95,6 +107,7 @@ function create(db, redis, dependencies) {
       const value = { rate: String(fd.r), exponent: Number(fd.e), minSize: String(raw.mos || 0), tick: String(raw.mts || ''), observedAt: Date.now(), raw };
       metadata.set(condition, value);
       if (raw.ao === true) states.set(condition, { observedAt: Date.now() });
+      else { states.delete(condition); states.forEach(function (state, key) { if (state.condition === condition) states.delete(key); }); }
       db.query("INSERT INTO paper_markets(id,raw) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET raw=EXCLUDED.raw || jsonb_build_object('gamma',COALESCE(paper_markets.raw->'gamma','{}'::jsonb)),\"updatedAt\"=NOW()", [condition, JSON.stringify(raw)], function (error) { finish(error, value); });
     });
   }
@@ -109,7 +122,7 @@ function create(db, redis, dependencies) {
       if (!raw) return callback(new Error('Market metadata temporarily unavailable'));
       if (raw.closed === true) return callback(new Error('Market is closed'));
       if (raw.acceptingOrders !== true || raw.active !== true || raw.closed !== false) return callback(new Error('Market is temporarily not accepting orders'));
-      saveSchedule(raw, function (error) { if (!error) states.set(signal.token, { observedAt: Date.now() }); callback(error); });
+      saveSchedule(raw, function (error) { if (!error) states.set(signal.token, { observedAt: Date.now(), condition: signal.condition }); callback(error); });
     });
   }
   function prepareLookup(signal, callback) {
@@ -135,13 +148,47 @@ function create(db, redis, dependencies) {
     ], callback);
   }
   function prepare(signal, callback) {
+    watchedSignals.set(signal.token, { signal: { condition: signal.condition, token: signal.token }, lastUsedAt: Date.now() });
+    const ready = signal.refreshBook === true ? null : cachedQuote(signal);
+    if (ready) { signal.outcomeIndex = ready.outcomeIndex; return callback(null, ready); }
     const key = signal.condition + ':' + signal.token + ':' + (signal.refreshBook === true ? 'refresh' : 'current');
     if (preparationPending.has(key)) { preparationPending.get(key).push({ signal, callback }); return; }
     preparationPending.set(key, [{ signal, callback }]);
     prepareLookup(signal, function (err, value) {
+      if (value) value.quoteSource = 'rest-preparation';
       const waiting = preparationPending.get(key); preparationPending.delete(key);
       waiting.forEach(function (entry) { if (value) entry.signal.outcomeIndex = value.outcomeIndex; entry.callback(err, value); });
     });
+  }
+  function usableBook(book) {
+    return !!book && !book.needsFullSnapshot && (liveBook(book) || Date.now() - book.observedAt <= config.bookMaxAgeMs);
+  }
+  function liveBook(book) { return health.connected && Date.now() - lastAliveAt <= 30000 && book.streamId === streamId && book.streamEpoch === connectionEpoch; }
+  function cachedQuote(signal) {
+    const params = metadata.get(signal.condition), book = books.get(signal.token);
+    if (!isExecutable(signal) || !params || Date.now() - params.observedAt >= 300000 || !usableBook(book) || (!states.has(signal.condition) && !states.has(signal.token))) return null;
+    const outcomeIndex = params.raw.t.findIndex(function (item) { return String(item.t) === String(signal.token); });
+    if (outcomeIndex < 0) return null;
+    return { metadata: params, book: JSON.parse(JSON.stringify(book)), outcomeIndex, quoteSource: liveBook(book) ? 'websocket-cache' : 'local-cache' };
+  }
+  function latestQuote(signal, previous) {
+    return cachedQuote(signal);
+  }
+  function refreshParameters(callback) {
+    const conditions = new Map();
+    watchedSignals.forEach(function (value, token) {
+      if (Date.now() - value.lastUsedAt > 300000) { watchedSignals.delete(token); return; }
+      const params = metadata.get(value.signal.condition);
+      if (!params || Date.now() - params.observedAt >= 30000) conditions.set(value.signal.condition, value.signal);
+    });
+    async.eachLimit([...conditions.values()], 2, function (signal, next) {
+      getMetadata(signal.condition, function (err, params) {
+        if (err) return next(err);
+        if (params.raw.ao === true) return next();
+        states.delete(signal.token);
+        tradingState(signal, function (error) { if (error && error.message === 'Market is closed') unavailable.add(signal.condition); next(error); }, true);
+      }, true);
+    }, callback);
   }
   function warm(signal) { prepare(signal, function () {}); }
   function consume(token, side, fills) {
@@ -209,6 +256,6 @@ function create(db, redis, dependencies) {
       }, callback);
     });
   }
-  return { prepare, warm, consume, mark, resolutions, schedules, saveSchedule, isExecutable, health, onResolved: function (listener) { resolutionListener = listener; }, start: connect, stop: function () { stopped = true; clearInterval(ping); clearTimeout(reconnect); if (socket) socket.terminate(); } };
+  return { prepare, warm, latestQuote, isFreshQuote: function (quote) { return usableBook(quote && quote.book); }, refreshParameters, consume, mark, resolutions, schedules, saveSchedule, isExecutable, health, onResolved: function (listener) { resolutionListener = listener; }, start: connect, stop: function () { stopped = true; health.connected = false; clearInterval(ping); clearTimeout(reconnect); if (socket) socket.terminate(); } };
 }
 module.exports = { create };

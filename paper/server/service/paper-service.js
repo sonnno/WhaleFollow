@@ -64,7 +64,8 @@ function create(db, markets) {
               order.details.config = executionConfig;
               if (currentTask) order.details.followTask = { generation: currentTask.generation, fundingMode: currentTask.fundingMode, copyPercent: currentTask.copyPercent, allocation: currentTask.allocation, maxOrderAmount: currentTask.maxOrderAmount };
               order.details.sourceAmount = str(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount);
-              let reason = signal.historical ? 'HISTORICAL' : signal.pausedAtDiscovery ? 'PAUSED_AT_DISCOVERY' : (!signal.active && signal.side === 'BUY') ? 'LEADER_INACTIVE' : settings.pauseAll ? 'PAUSED' : settings.pauseBuys && signal.side === 'BUY' ? 'BUYS_PAUSED' : preparationError ? preparationError.message : !quote ? 'QUOTE_MISSING' : Date.now() - quote.book.observedAt > config.bookMaxAgeMs ? 'STALE_BOOK' : '';
+              if (quote && markets.latestQuote) quote = markets.latestQuote(signal, quote);
+              let reason = signal.historical ? 'HISTORICAL' : signal.pausedAtDiscovery ? 'PAUSED_AT_DISCOVERY' : (!signal.active && signal.side === 'BUY') ? 'LEADER_INACTIVE' : settings.pauseAll ? 'PAUSED' : settings.pauseBuys && signal.side === 'BUY' ? 'BUYS_PAUSED' : preparationError ? preparationError.message : !quote ? 'QUOTE_MISSING' : (markets.isFreshQuote ? !markets.isFreshQuote(quote) : Date.now() - quote.book.observedAt > config.bookMaxAgeMs) ? 'STALE_BOOK' : '';
               if (signal.side === 'BUY') reason = rules.buyBlocked(signal, currentTask, queuedJob) || reason;
               if (!reason && (!Number.isInteger(signal.outcomeIndex) || signal.outcomeIndex < 0 || signal.outcomeIndex > 1)) reason = 'UNSUPPORTED_OR_UNKNOWN_OUTCOME';
               if (!reason && signal.side === 'BUY' && (!currentLeader || !currentLeader.active)) reason = 'LEADER_CURRENTLY_INACTIVE';
@@ -141,6 +142,8 @@ function create(db, markets) {
                     if (err) return save(err);
                     order.createdAt = rows[0].at;
                     Object.assign(order.details.timings, require('../lib/execution-clock').stamp(signal));
+                    order.details.timings.quoteSource = quote.quoteSource || 'prepared';
+                    order.details.timings.dispatchMode = signal.dispatchMode || 'recovery';
                     tx.save('Order', order, function (error) { save(error); });
                   });
                 },
