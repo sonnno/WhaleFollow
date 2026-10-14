@@ -1,0 +1,33 @@
+{
+  "name": "polymarket-paper-copy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone simulated copy trading dashboard",
+  "scripts": {
+    "start": "node server/index.js",
+    "worker": "node server/worker.js",
+    "db:init": "node scripts/db-init.js",
+    "test": "node --test tests/*.test.js",
+    "web:dev": "vite --config web/vite.config.js",
+    "web:build": "vite build --config web/vite.config.js",
+    "check": "node scripts/check-style.js"
+  },
+  "dependencies": {
+    "async": "^3.2.6",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "https-proxy-agent": "^7.0.6",
+    "ioredis": "^5.8.2",
+    "pg": "^8.16.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "0.3.28",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "vite": "^6.4.1"
+  }
+}

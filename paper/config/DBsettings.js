@@ -1,0 +1,12 @@
+require('dotenv').config({ path: require('node:path').join(__dirname, '../.env'), quiet: true });
+const DBsettings = {};
+DBsettings.POSTGRES_HOST = process.env.POSTGRES_HOST || 'localhost';
+DBsettings.POSTGRES_PORT = Number(process.env.POSTGRES_PORT || 5432);
+DBsettings.POSTGRES_USER = process.env.POSTGRES_USER || 'root';
+DBsettings.POSTGRES_PASSWORD = process.env.POSTGRES_PASSWORD === undefined ? '123456' : process.env.POSTGRES_PASSWORD;
+DBsettings.POSTGRES_DATABASE = process.env.POSTGRES_DATABASE || 'polymarket_copy';
+if (DBsettings.POSTGRES_DATABASE === 'polymarket_live') throw new Error('虚拟系统不能连接真实系统数据库');
+DBsettings.REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
+DBsettings.REDIS_PORT = Number(process.env.REDIS_PORT || 6379);
+DBsettings.REDIS_PASSWORD = process.env.REDIS_PASSWORD || '';
+module.exports = DBsettings;

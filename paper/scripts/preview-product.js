@@ -1,0 +1,15 @@
+// UI preview uses a disposable database and never starts the collector or financial SDK.
+const async=require('async'),{Client}=require('pg'),{spawn}=require('node:child_process');
+const settings=require('../config/DBsettings'),name='polymarket_preview_test_'+Date.now();
+const db=require('../server/db/adapter').create({database:name});const admin=new Client({host:settings.POSTGRES_HOST,port:settings.POSTGRES_PORT,user:settings.POSTGRES_USER,password:settings.POSTGRES_PASSWORD,database:'postgres'});
+const config=require('../config').paper;config.initialCash='1000';const paper=require('../server/service/paper-service').create(db,null),tasks=require('../server/service/follow-task-service').create(db);
+let created=false,child,closing=false;
+const transfers=require('../server/service/follow-transfer-service').create(db);
+async.waterfall([
+function(next){admin.connect(function(err){next(err);});},function(next){admin.query('CREATE DATABASE "'+name+'"',function(err){created=!err;next(err);});},function(next){db.connect(function(err){next(err);});},function(next){db.migrate(function(err){next(err);});},function(next){paper.initialize(function(err){next(err);});},function(next){tasks.initialize(function(err){next(err);});},
+function(next){async.eachSeries(['a','b'],function(letter,cb){const wallet='0x'+letter.repeat(40);tasks.save({wallet,name:letter==='a'?'示例A · 独立账户':'示例B · 公共钱包',fundingMode:letter==='a'?'dedicated':'shared',allocation:letter==='a'?'500':'1000',copyPercent:letter==='a'?'100':'1',maxOrderAmount:letter==='a'?null:'50'},function(err){if(err)return cb(err);if(letter==='a')return tasks.control(wallet,{action:'start'},function(err){cb(err);});cb();});},next);},
+function(next){transfers.transfer('0x'+'a'.repeat(40),{direction:'in',amount:'500',requestId:'preview-initial-reserve'},function(err){next(err);});},
+function(next){db.close(function(err){next(err);});}
+],function(err){if(err)return cleanup(err);child=spawn(process.execPath,['server/index.js'],{cwd:require('node:path').join(__dirname,'..'),env:{...process.env,POSTGRES_DATABASE:name,PORT:'3220'},windowsHide:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',function(chunk){process.stdout.write(chunk);});child.stderr.on('data',function(chunk){process.stderr.write(chunk);});child.once('error',cleanup);child.once('exit',function(){if(!closing)cleanup(new Error('Preview API exited'));});console.log('Disposable preview starting; stop this helper after UI checks.');});
+process.once('SIGINT',function(){cleanup();});process.once('SIGTERM',function(){cleanup();});
+function cleanup(error){if(closing)return;closing=true;function end(){db.close(function(){if(created&&/^polymarket_preview_test_\d+$/.test(name))admin.query('DROP DATABASE "'+name+'"',function(err){admin.end(function(){if(error||err){console.error((error||err).message);process.exitCode=1;}else console.log('Preview stopped; disposable database removed.');});});else admin.end();});}if(child&&child.exitCode===null){child.once('exit',end);child.kill();}else end();}

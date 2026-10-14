@@ -1,0 +1,42 @@
+name: Paper validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: paper/package-lock.json
+      - run: npm ci && npm test && npm run check && npm run web:build
+        working-directory: paper
+      - name: Fresh Compose boot
+        run: docker compose -p whalefollow-ci up -d --build --wait --wait-timeout 180
+        env:
+          PORT: 33300
+          BIND_ADDRESS: 127.0.0.1
+      - run: docker compose -p whalefollow-ci exec -T api node deploy/smoke.js prepare
+        env:
+          PORT: 33300
+          BIND_ADDRESS: 127.0.0.1
+      - name: Persistent restart
+        run: |
+          docker compose -p whalefollow-ci down
+          docker compose -p whalefollow-ci up -d --wait --wait-timeout 180
+          docker compose -p whalefollow-ci exec -T api node deploy/smoke.js check
+        env:
+          PORT: 33300
+          BIND_ADDRESS: 127.0.0.1
+      - name: Diagnostics
+        if: failure()
+        run: docker compose -p whalefollow-ci logs --tail=100
+      - name: Remove disposable CI project
+        if: always()
+        run: docker compose -p whalefollow-ci down -v

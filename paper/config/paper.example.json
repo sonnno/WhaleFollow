@@ -1,0 +1,20 @@
+{
+  "mode": "paper",
+  "initialCash": "100000",
+  "currency": "USDT",
+  "copySizing": "equal_amount",
+  "bookMaxAgeMs": 2000,
+  "leaderboardSeconds": 600,
+  "tradePollSeconds": 2,
+  "fallbackTradePollSeconds": 2,
+  "overlapSeconds": 300,
+  "inventorySeconds": 60,
+  "settlementSeconds": 60,
+  "equitySeconds": 60,
+  "requestTimeoutMs": 15000,
+  "dataUrl": "https://data-api.polymarket.com",
+  "gammaUrl": "https://gamma-api.polymarket.com",
+  "clobUrl": "https://clob.polymarket.com",
+  "activityWsUrl": "wss://ws-live-data.polymarket.com",
+  "marketWsUrl": "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+}

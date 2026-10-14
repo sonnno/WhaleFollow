@@ -1,0 +1,135 @@
+name: whalefollow
+
+x-app: &app
+  image: ${COMPOSE_PROJECT_NAME:-whalefollow}-paper:local
+  pull_policy: never
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 30s
+  environment: &app-env
+    NODE_ENV: production
+    TZ: Asia/Shanghai
+    HOST: 0.0.0.0
+    PORT: 3000
+    INITIAL_CASH: ${INITIAL_CASH:-350}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    POSTGRES_USER: whalefollow
+    POSTGRES_DATABASE: whalefollow_paper
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    REDIS_PASSWORD: ""
+    RUNTIME_DIR: /var/lib/whalefollow
+    POLYMARKET_PROXY_URL: ${POLYMARKET_PROXY_URL:-}
+  volumes:
+    - runtime:/var/lib/whalefollow:ro
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  bootstrap:
+    <<: *app
+    build:
+      context: ./paper
+    pull_policy: build
+    restart: "no"
+    command: [node, deploy/bootstrap.js]
+    environment:
+      RUNTIME_DIR: /var/lib/whalefollow
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - runtime:/var/lib/whalefollow
+    mem_limit: 96m
+
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: whalefollow
+      POSTGRES_DB: whalefollow_paper
+      POSTGRES_PASSWORD_FILE: /run/whalefollow/postgres-password
+      TZ: Asia/Shanghai
+    command: [postgres, -c, shared_buffers=128MB, -c, work_mem=4MB, -c, max_connections=40, -c, max_parallel_workers_per_gather=0]
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - runtime:/run/whalefollow:ro
+    shm_size: 128mb
+    mem_limit: 512m
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U whalefollow -d whalefollow_paper']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging: *logging
+
+  redis:
+    image: redis:7-bookworm
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes", --maxmemory, 64mb, --maxmemory-policy, noeviction]
+    volumes:
+      - redis-data:/data
+    mem_limit: 128m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: [node, deploy/run.js, migrate]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 256m
+
+  api:
+    <<: *app
+    command: [node, deploy/run.js, api]
+    ports:
+      - '${BIND_ADDRESS:-0.0.0.0}:${PORT:-3000}:3000'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    mem_limit: 256m
+    healthcheck:
+      test: [CMD, node, deploy/healthcheck.js, api]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command: [node, deploy/run.js, worker]
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 640m
+    healthcheck:
+      test: [CMD, node, deploy/healthcheck.js, worker]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  runtime:
+  postgres-data:
+  redis-data:
