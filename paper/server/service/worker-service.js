@@ -6,7 +6,7 @@ const agent = require('../lib/network-agent');
 function create(db, redis, leaders, sources, markets, paper, dashboard, options) {
   options = options || {};
   const config = options.config || require('../../config').paper;
-  const health = { processId: process.pid, latencyVersion: 4,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
+  const health = { processId: process.pid, latencyVersion: 5,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1,persistenceVersion:2, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
   let stopped = false, socket, reconnect, heartbeat, activityFailures = 0;
   const timers = [], locks = new Set(), walletBusy = new Set(), inventoryBusy = new Set(), walletPending = new Set(), lastPeriodic = new Map(), tokenQueues = new Map(), admitted = new Set();
   let trackedWallets = config.followWallets && config.followWallets.length ? new Set(config.followWallets) : null;
@@ -206,7 +206,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       const wallet = String(value.proxyWallet || value.proxy_wallet || '').toLowerCase();
       if (!wallet) return;
       if (trackedWallets && !trackedWallets.has(wallet)) return;
-      db.one('Leader', { where: { id: wallet } }, function (err, row) {
+      function processLeader(err, row, retried) {
         if (stopped || err || !row) return;
         health.followedActivityMessages = (health.followedActivityMessages || 0) + 1;
         health.lastFollowedActivityAt = new Date().toISOString();
@@ -216,9 +216,13 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
         if (!sources.ingestWebsocket) return pollWallet(wallet, function (error) { report('activity-trigger', error); });
         sources.ingestWebsocket(value, { generation: Number(row.raw && row.raw.followGeneration || 0), receivedAt, receivedMonotonicMs }, function (error, result) {
           report('activity-ingest', error);
+          if (!error && result && result.result && result.result.stale && !retried) return db.one('Leader', { where: { id: wallet } }, function (failure, current) { if (current && options.controls) options.controls.observeLeader(current); processLeader(failure, current, true); });
           if (error || !result || !result.handled || result.needsRest) pollWallet(wallet, function (failure) { report('activity-trigger', failure); });
         });
-      });
+      }
+      const cached = options.controls && options.controls.get(wallet);
+      if (cached && cached.leader) processLeader(null, cached.leader, false);
+      else db.one('Leader', { where: { id: wallet } }, function (err, row) { processLeader(err, row, false); });
     });
     connection.on('close', function () {
       clearInterval(connectionHeartbeat);
@@ -248,6 +252,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       every('schedule', 600, markets.schedules, true);
       every('market-enrich', 2, enrichment.run);
       if (markets.refreshParameters) every('market-parameters', 10, markets.refreshParameters);
+      if (options.controls && options.controls.refresh) every('execution-controls', 1, options.controls.refresh);
       if (sources.reconcile) every('source-reconcile', 5, sources.reconcile);
       every('equity', 2, snapshot, true);
       every('daily-report', 30, dailyReports.runDue, true);

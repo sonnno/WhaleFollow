@@ -4,6 +4,7 @@ const session = require('express-session');
 const path = require('node:path');
 require('../config');
 const db = require('./db/adapter').create();
+const controlRedis = require('./lib/redis')();
 const dashboard = require('./service/dashboard-service').create(db);
 const marketStatistics=require('./service/market-statistics-service').create(db);
 const dailyReports = require('./service/daily-report-service').create(db);
@@ -31,6 +32,7 @@ app.use('/api', function (req, res, next) {
   next();
 });
 function reply(res) { return function (err, data) { if (err) res.status(err.status || err.statusCode || 500).json({ error: err.message }); else res.json(data === undefined ? { ok: true } : data); }; }
+function controlReply(res) { return function (err, data) { if (err) return reply(res)(err); controlRedis.publish(require('./service/execution-control-service').channel, 'refresh', function () { reply(res)(null, data); }); }; }
 app.post('/api/login', function (req, res) {
   auth.login(req.body.username, req.body.password, req.ip, function (err, user) {
     if (err) return reply(res)(err);
@@ -43,12 +45,12 @@ app.post('/api/logout', function (req, res) { req.session.destroy(reply(res)); }
 app.get('/api/leaderboards/catalog', function (req, res) { res.json(leaderboardQuery.catalog()); });
 app.get('/api/leaderboards', function (req, res) { leaderboardQuery.query(req.query, reply(res)); });
 app.get('/api/follow-tasks', function (req, res) { followTasks.list(reply(res)); });
-app.post('/api/follow-tasks', function (req, res) { followTasks.save(req.body, reply(res)); });
-app.post('/api/follow-tasks/setup', function (req, res) { taskOnboarding.setup(req.body, reply(res)); });
-app.post('/api/follow-tasks/:wallet/control', function (req, res) { followTasks.control(req.params.wallet, req.body, reply(res)); });
-app.post('/api/follow-tasks/:wallet/transfers', function (req, res) { followTransfers.transfer(req.params.wallet, req.body, reply(res)); });
+app.post('/api/follow-tasks', function (req, res) { followTasks.save(req.body, controlReply(res)); });
+app.post('/api/follow-tasks/setup', function (req, res) { taskOnboarding.setup(req.body, controlReply(res)); });
+app.post('/api/follow-tasks/:wallet/control', function (req, res) { followTasks.control(req.params.wallet, req.body, controlReply(res)); });
+app.post('/api/follow-tasks/:wallet/transfers', function (req, res) { followTransfers.transfer(req.params.wallet, req.body, controlReply(res)); });
 app.get('/api/follow-tasks/:wallet/transfers', function (req, res) { followTransfers.list(req.params.wallet, req.query, reply(res)); });
-app.post('/api/follow-tasks/:wallet/delete', function (req, res) { taskDeletion.remove(req.params.wallet, req.body, reply(res)); });
+app.post('/api/follow-tasks/:wallet/delete', function (req, res) { taskDeletion.remove(req.params.wallet, req.body, controlReply(res)); });
 app.get('/api/overview', function (req, res) { dashboard.overview(reply(res)); });
 app.get('/api/cash-summary', function (req, res) { dashboard.cashSummary(reply(res)); });
 app.get('/api/bets', function (req, res) { dashboard.bets(req.query, reply(res)); });
@@ -61,7 +63,7 @@ app.get('/api/daily-reports', function (req, res) { dailyReports.list(req.query,
 app.get('/api/daily-task-reports',function(req,res){dailyReports.listTasks(req.query,reply(res));});
 app.get('/api/daily-report-traders',function(req,res){dailyReports.traders(reply(res));});
 app.get('/api/settings', function (req, res) { admin.settings(reply(res)); });
-app.post('/api/settings', function (req, res) { admin.pause(req.body, reply(res)); });
+app.post('/api/settings', function (req, res) { admin.pause(req.body, controlReply(res)); });
 app.get('/api/health', function (req, res) { admin.health(reply(res)); });
 app.get('/api/events', function (req, res) {
   if (!require('./service/http-lifecycle-service').registerRefreshStream(refreshStreams,res,closing)) return;
@@ -88,12 +90,13 @@ async.waterfall([
   function (next) { if (!process.env.ADMIN_PASSWORD || !process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) return next(new Error('请运行 node scripts/setup-local.js 生成管理员配置，或在 .env 设置 ADMIN_PASSWORD 和 SESSION_SECRET')); db.connect(function (err) { next(err); }); },
   function (next) { db.apiLease(function () { process.exitCode = 1; shutdown(); }, function (err, release) { releaseApi = release; next(err); }); },
   function (next) { paper.initialize(function (err) { next(err); }); },
-  function (next) { followTasks.initialize(function (err) { next(err); }); }
+  function (next) { followTasks.initialize(function (err) { next(err); }); },
+  function (next) { controlRedis.connect(function () { next(); }); }
 ], function (err) {
   if (err) { console.error('API start failed:', err.message); process.exitCode = 1; shutdown(); return; }
   const listen = require('./lib/listen-options').listenOptions();
   server = app.listen(listen.port, listen.host, function () { console.log('Paper dashboard listening on ' + listen.host + ':' + listen.port); });
   server.on('error', function (error) { console.error(error.message); process.exitCode = 1; shutdown(); });
 });
-function shutdown() { if (closing) return; closing = true; function close() { if (releaseApi) { const release = releaseApi; releaseApi = null; release(function () { db.close(function () {}); }); } else db.close(function () {}); } require('./service/http-lifecycle-service').closeServer(server,refreshStreams,close); }
+function shutdown() { if (closing) return; closing = true; function close() { controlRedis.disconnect(); if (releaseApi) { const release = releaseApi; releaseApi = null; release(function () { db.close(function () {}); }); } else db.close(function () {}); } require('./service/http-lifecycle-service').closeServer(server,refreshStreams,close); }
 process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);

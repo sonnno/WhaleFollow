@@ -58,6 +58,7 @@ function create(options) {
   migrations.push(require('./migrations/follow-tasks'));
   migrations.push(require('./migrations/manual-transfers'));
   migrations.push(require('./migrations/daily-task-reports'));
+  migrations.push(require('./migrations/execution-indexes'));
   const source = new DataSource({ type: 'postgres', host: settings.POSTGRES_HOST, port: settings.POSTGRES_PORT, username: settings.POSTGRES_USER, password: settings.POSTGRES_PASSWORD, database: options.database || settings.POSTGRES_DATABASE, entities, migrations, migrationsTableName: 'paper_migrations', synchronize: false, logging: false, extra: { connectionTimeoutMillis: 5000, max: 10, options: '-c max_parallel_workers_per_gather=0' } });
   function acquireLease(key, onLost, callback) {
       const runner = source.createQueryRunner();

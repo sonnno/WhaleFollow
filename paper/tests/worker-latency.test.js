@@ -8,7 +8,7 @@ require.cache[wsPath].exports = Socket;
 const create = require('../server/service/worker-service').create;
 require.cache[wsPath].exports = realWs;
 const wallet = '0x2a69660046d7acc4ab204d7cc5ba78b0776cd2f7';
-function fixture(t) {
+function fixture(t, options) {
   const timers = [], polls = [], inventories = [], queries = [];
   t.mock.method(global, 'setInterval', function (fn, ms) { timers.push({ fn, ms }); return {}; });
   t.mock.method(global, 'clearInterval', function () {});
@@ -20,11 +20,29 @@ function fixture(t) {
   const sources = { poll: function (_, cb) { polls.push(cb); }, onSignal: function (fn) { listener = fn; } };
   const markets = { start: function () {}, stop: function () {}, onResolved: function () {}, resolutions: function (cb) { cb(null, []); }, mark: function (cb) { cb(); }, schedules: function (cb) { cb(); }, health: {} };
   const paper = { initialize: function (cb) { cb(); } }, dashboard = { snapshot: function (cb) { cb(); } };
-  const worker = create(db, redis, leaders, sources, markets, paper, dashboard);
+  const worker = create(db, redis, leaders, sources, markets, paper, dashboard, options);
   worker.start(function (err) { assert.ifError(err); });
   t.after(function () { worker.stop(function () {}); });
   return { socket: Socket.last, db, redis, paper, dashboard, leaders, sources, markets, worker, polls, inventories, queries, timers, notify: function (signal) { assert.equal(typeof listener, 'function', 'new source signals must wake dispatch'); listener('new-intent', signal); }, notice: function () { Socket.last.emit('message', JSON.stringify({ topic: 'activity', type: 'trades', payload: { proxyWallet: wallet, timestamp: Date.now() / 1000 } })); } };
 }
+
+test('ready memory control cache avoids a separate Leader query for a WS trade', function (t) {
+  const cached = { id: wallet, active: true, raw: { followGeneration: 1 } };
+  const f = fixture(t, { controls: { get: function () { return { leader: cached }; } } }); let ingested = 0;
+  f.db.one = function () { assert.fail('ready cached leader must be read in memory'); };
+  f.sources.ingestWebsocket = function (_, context, cb) { assert.equal(context.generation, 1); ingested++; cb(null, { handled: true }); };
+  f.socket.emit('message', JSON.stringify({ topic: 'activity', type: 'trades', payload: { proxyWallet: wallet, timestamp: 100 } }));
+  assert.equal(ingested, 1);
+});
+
+test('a stale cached control generation rereads the leader and retries WS ingestion without REST', function (t) {
+  const cached = { id: wallet, active: true, raw: { followGeneration: 1 } }, generations = [];
+  const f = fixture(t, { controls: { get: function () { return { leader: cached }; }, observeLeader: function () {} } });
+  f.db.one = function (_, __, cb) { cb(null, { ...cached, raw: { followGeneration: 2 } }); };
+  f.sources.ingestWebsocket = function (_, context, cb) { generations.push(context.generation); cb(null, { handled: true, result: context.generation === 1 ? { stale: true } : 'created' }); };
+  f.socket.emit('message', JSON.stringify({ topic: 'activity', type: 'trades', payload: { proxyWallet: wallet, timestamp: 100 } }));
+  assert.deepEqual(generations, [1, 2]); assert.equal(f.polls.length, 1, 'changed cache must not wait for source REST');
+});
 
 test('a committed WS signal starts copy without Redis delivery and duplicate admissions stay single', function (t, done) {
   const f = fixture(t), copied = [], signal = { id: 'new-intent', wallet, token: 'token', side: 'BUY', origin: 'websocket', fundingMode: 'dedicated' };

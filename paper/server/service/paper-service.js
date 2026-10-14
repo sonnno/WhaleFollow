@@ -1,12 +1,13 @@
 const async = require('async');
-const crypto = require('node:crypto');
 const accounting = require('./accounting-service');
 const simulation = require('./simulation-service');
 const rules = require('./follow-rule-service');
 const { D, str } = accounting;
 const config = require('../../config').paper;
 
-function create(db, markets) {
+function create(db, markets, options) {
+  options = options || {};
+  const store = require('./paper-copy-store');
   function initialize(callback) {
     db.transaction(function (tx, done) {
       async.waterfall([
@@ -37,22 +38,21 @@ function create(db, markets) {
           let account, position, order, fill, settings, currentLeader, currentMarket, previousOrder, currentTask, sourceSpent = '0', queuedJob, sharedCash, ownPositionCost = '0', saleBaseline = null, sourceSold = '0';
           const positionId = signal.wallet + ':' + signal.token;
           async.waterfall([
-            function (step) { tx.query('SELECT * FROM paper_accounts WHERE id=$1 FOR UPDATE', ['paper'], step); },
-            function (rows, step) { account = rows[0]; if (!account) return step(new Error('Paper account missing')); tx.one('Order', { where: { id: signal.id } }, step); },
-            function (existing, step) { if (existing && existing.status !== 'WAITING') return done(null, { duplicate: true, order: existing }); previousOrder = existing; tx.one('Position', { where: { id: positionId } }, step); },
-            function (row, step) { position = row; tx.one('Leader', { where: { id: signal.wallet } }, step); },
-            function (row, step) { currentLeader = row; tx.one('FollowTask', { where: { id: signal.wallet } }, step); },
-            function (row, step) { currentTask = row; tx.one('Setting',{where:{id:'task-deletion:'+signal.wallet}},function(err,marker){if(err)return step(err);if(marker&&Number(signal.followGeneration||0)<=Number(marker.value.generation))return done(null,{taskDeleted:true,retry:false});tx.one('Outbox', { where: { id: signal.id } }, step);}); },
-            function (row, step) { queuedJob = row; tx.one('Market', { where: { id: signal.condition } }, step); },
-            function (row, step) { currentMarket = row; if (!signal.title && row && row.raw && row.raw.gamma && row.raw.gamma.question) signal.title = row.raw.gamma.question; tx.one('Setting', { where: { id: 'runtime' } }, step); },
-            function (row, step) { settings = row ? row.value : {};
-              if (signal.side === 'SELL') return tx.query(`SELECT
-                (SELECT details->'saleBaseline' FROM paper_orders WHERE "sourceId"=$1 AND side='SELL' AND status IN ('FILLED','PARTIAL') AND details ? 'saleBaseline' ORDER BY "createdAt",id LIMIT 1) AS "saleBaseline",
-                (SELECT COALESCE(SUM(quantity),0)::text FROM paper_orders WHERE "sourceId"=$1 AND side='SELL' AND status IN ('FILLED','PARTIAL')) AS "soldQuantity"`, [signal.sourceId], step);
-              if (!currentTask) return step(null, []); tx.query(`SELECT
-              (SELECT COALESCE(SUM(gross+fee),0)::text FROM paper_orders WHERE "sourceId"=$1 AND side='BUY' AND status IN ('FILLED','PARTIAL')) spent,
-              ($3::numeric-(SELECT COALESCE(SUM(cash),0) FROM paper_follow_tasks WHERE "fundingMode"='dedicated'))::text "sharedCash",
-              (SELECT COALESCE(SUM(cost),0)::text FROM paper_positions WHERE wallet=$2 AND quantity>0) "positionCost"`, [signal.sourceId, signal.wallet, account.cash], step); },
+            function (step) { store.read(tx, signal, step); },
+            function (context, step) {
+              if (context.taskDeleted) return done(null, { taskDeleted: true, retry: false });
+              const claimed = context.claimed;
+              if (!claimed) return step(new Error('Order claim missing'));
+              if (!claimed.inserted && claimed.status !== 'WAITING') return done(null, { duplicate: true, order: claimed });
+              account = context.account; position = context.position; currentLeader = context.leader;
+              currentTask = context.task; currentMarket = context.market; queuedJob = context.job; settings = context.settings || {};
+              previousOrder = claimed.inserted ? null : claimed;
+              if (options.controls) options.controls.observe(context);
+              const control = options.controls && options.controls.get(signal.wallet);
+              if (control) { currentLeader = control.leader; settings = control.settings; }
+              if (!signal.title && currentMarket && currentMarket.raw && currentMarket.raw.gamma && currentMarket.raw.gamma.question) signal.title = currentMarket.raw.gamma.question;
+              step(null, [{ spent: context.spent, saleBaseline: context.saleBaseline, soldQuantity: context.soldQuantity, sharedCash: context.sharedCash, positionCost: context.positionCost }]);
+            },
             function (rows, step) {
               sourceSpent = rows[0] ? rows[0].spent : '0';
               saleBaseline = rows[0] && rows[0].saleBaseline || null; sourceSold = rows[0] && rows[0].soldQuantity || '0';
@@ -133,27 +133,11 @@ function create(db, markets) {
               order.details.quote = quote;
               order.details.remaining = fill.remaining;
               order.details.feeAccounting = 'Virtual fee debited in cash equivalent';
-              async.waterfall([
-                function (save) { tx.save('Account', account, function (err) { save(err); }); },
-                function (save) { if (currentTask) tx.save('FollowTask', currentTask, function (err) { save(err); }); else save(); },
-                function (save) { tx.save('Position', position, function (err) { save(err); }); },
-                function (save) {
-                  tx.query('SELECT clock_timestamp() AS at', [], function (err, rows) {
-                    if (err) return save(err);
-                    order.createdAt = rows[0].at;
-                    Object.assign(order.details.timings, require('../lib/execution-clock').stamp(signal));
-                    order.details.timings.quoteSource = quote.quoteSource || 'prepared';
-                    order.details.timings.dispatchMode = signal.dispatchMode || 'recovery';
-                    tx.save('Order', order, function (error) { save(error); });
-                  });
-                },
-                function (save) { async.eachSeries(fill.fills, function (part, saved) { tx.insert('Fill', { id: crypto.randomUUID(), orderId: order.id, wallet: signal.wallet, token: signal.token, side: signal.side, ...part, createdAt: order.createdAt }, function (err) { saved(err); }); }, save); },
-                function (save) { tx.insert('Ledger', { id: 'trade:' + order.id, reference: order.id, kind: signal.side, delta: signal.side === 'BUY' ? str(D(fill.cash).negated()) : fill.cash, balance: account.cash, details: { gross: fill.gross, fee: fill.fee }, createdAt: order.createdAt }, function (err) { save(err); }); },
-                function (save) {
-                  if (D(position.quantity).isZero()) tx.insert('Cycle', { id: position.id + ':' + position.cycle, wallet: position.wallet, token: position.token, profit: position.cycleRealized, reason: 'SELL', createdAt: order.createdAt }, function (err) { save(err); });
-                  else save();
-                }
-              ], function (err) { step(err, order); });
+              Object.assign(order.details.timings, require('../lib/execution-clock').stamp(signal));
+              order.details.timings.quoteSource = quote.quoteSource || 'prepared';
+              order.details.timings.dispatchMode = signal.dispatchMode || 'recovery';
+              order.details.timings.persistenceVersion = 2;
+              store.commit(tx, account, currentTask, position, order, fill, function (err) { step(err, order); });
             }
           ], function (err, value) { done(err, { order: value, retry: !!value && value.status === 'WAITING', retryAfterMs: preparationError && preparationError.retryAfterMs || 0, fill: fill && value && ['FILLED', 'PARTIAL'].includes(value.status) ? fill : null }); });
         }, next);

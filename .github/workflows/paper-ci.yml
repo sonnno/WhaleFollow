@@ -26,6 +26,13 @@ jobs:
         env:
           PORT: 33300
           BIND_ADDRESS: 127.0.0.1
+      - name: Isolated financial SQL integration
+        run: |
+          docker compose -p whalefollow-ci exec -T postgres createdb -U whalefollow whalefollow_copy_test
+          docker compose -p whalefollow-ci exec -T -e COPY_SQL_TEST_DATABASE=whalefollow_copy_test api node deploy/copy-store-smoke.js
+        env:
+          PORT: 33300
+          BIND_ADDRESS: 127.0.0.1
       - name: Persistent restart
         run: |
           docker compose -p whalefollow-ci down
