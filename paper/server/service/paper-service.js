@@ -140,7 +140,7 @@ function create(db, markets) {
                   tx.query('SELECT clock_timestamp() AS at', [], function (err, rows) {
                     if (err) return save(err);
                     order.createdAt = rows[0].at;
-                    if (signal.timing && signal.timing.processId === process.pid) order.details.timings.receivedToExecutionMs = Math.round(performance.now() - signal.timing.receivedMonotonicMs);
+                    Object.assign(order.details.timings, require('../lib/execution-clock').stamp(signal));
                     tx.save('Order', order, function (error) { save(error); });
                   });
                 },

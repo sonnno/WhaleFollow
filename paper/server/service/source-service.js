@@ -95,7 +95,7 @@ function create(db, options) {
           const signal = { id: intentId, sourceId: group.id, wallet: group.wallet, token: group.token, condition: group.condition, side: group.side, size: str(total), price: str(price), sourceAmount: str(amount), timestamp: Number(group.timestamp), discoveredAt: new Date().toISOString(), receivedAt: group.receivedAt || null, origin: group.origin || 'rest', title: group.raw[0].title || '', outcomeIndex: Number(group.raw[0].outcome_index), beforeInventory: validInventory ? before : null, active: leader.active, historical, raw: group.raw, config: { ...config } };
           signal.followGeneration = Number(leader.raw.followGeneration || 0);
           signal.cumulativeSize = str(sum(merged.quantities));
-          if (group.receivedMonotonicMs !== undefined) signal.timing = { processId: process.pid, receivedMonotonicMs: group.receivedMonotonicMs, discoveryMonotonicMs: performance.now() };
+          if (group.receivedMonotonicMs !== undefined) signal.timing = require('../lib/execution-clock').timing(group.receivedMonotonicMs);
           signal.fundingMode = leader.raw.followFundingMode || 'shared';
           createdSignal = total.isZero() ? null : signal;
           if (!historical) leader.raw.lastTradeObservedAt = Date.now();
@@ -164,7 +164,8 @@ function create(db, options) {
           http.pages(config.dataUrl, '/v2/trades', { user: job.payload.wallet, taker_only: false, start: job.payload.timestamp, end: job.payload.timestamp, limit: 1000 }, function (failure, rows) {
             let groups = [];
             if (!failure) { try { groups = groupTrades(rows).filter(function (group) { return group.id === job.payload.sourceId; }); } catch (parseError) { failure = parseError; } }
-            groups.forEach(function (group) { group.collectorGeneration = generation; group.reconciliationJobId = job.id; });
+            const receivedAt = new Date().toISOString(), receivedMonotonicMs = performance.now();
+            groups.forEach(function (group) { group.collectorGeneration = generation; group.reconciliationJobId = job.id; group.receivedAt = receivedAt; group.receivedMonotonicMs = receivedMonotonicMs; });
             function finish(processError) {
               currentLeader(job.payload.wallet, generation, function (tx, current, saved) {
                 tx.one('Outbox', { where: { id: job.id } }, function (readError, existing) {
@@ -203,7 +204,8 @@ function create(db, options) {
       function (rows, next) {
         let groups;
         try { groups = groupTrades(rows); } catch (err) { return next(err); }
-        groups.forEach(function(group){group.collectorGeneration=generation;});
+        const receivedAt = new Date().toISOString(), receivedMonotonicMs = performance.now();
+        groups.forEach(function(group){group.collectorGeneration=generation;group.receivedAt=receivedAt;group.receivedMonotonicMs=receivedMonotonicMs;});
         unprocessed(groups, function (lookupError, pending) {
           if (lookupError) return next(lookupError);
           processPending(pending, next);

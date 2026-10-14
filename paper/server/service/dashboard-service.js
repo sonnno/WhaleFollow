@@ -73,6 +73,7 @@ function create(db) {
       SELECT o.id,o.wallet,o.token,o.condition,o."createdAt",o.quantity,(o.gross+o.fee)::text amount,
         o.gross::text gross,o.fee::text fee,o.details->'signal'->>'price' "sourcePrice",
         o.details->'signal'->>'timestamp' "sourceTimestamp",COALESCE(o.details->>'sourceAmount',o.details->'signal'->>'sourceAmount') "sourceAmount",
+        o.details->'signal'->>'receivedAt' "receivedAt",o.details->'timings' "executionTimings",
         (o.gross/NULLIF(o.quantity,0))::text "buyPrice",COALESCE(l.name,o.wallet) "traderName",
         COALESCE(NULLIF(o.details->'signal'->>'title',''),NULLIF(p.title,''),o.condition) title,
         COALESCE(m.raw->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o',o.details->'quote'->'metadata'->'raw'->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o') outcome,
@@ -187,7 +188,8 @@ function create(db) {
           amount: str(order.side === 'BUY' ? D(order.gross).plus(order.fee) : D(order.gross).minus(order.fee)), fee: order.fee,
           quantity: order.quantity, averagePrice: D(order.quantity).gt(0) ? str(D(order.gross).div(order.quantity)) : null,
           sourceAmount: order.details.sourceAmount || str(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount), gross: order.gross,
-          sourcePrice: signal.price || null, sourceTime: signal.timestamp ? new Date(Number(signal.timestamp) * 1000).toISOString() : null, createdAt: order.createdAt };
+          sourcePrice: signal.price || null, sourceTimestamp: signal.timestamp, receivedAt: signal.receivedAt || null, executionTimings: order.details.timings || {}, createdAt: order.createdAt };
+        tradeView.enrich(view);
         delete view.cycleReason;
         Object.assign(view, describe(view.gamma)); delete view.gamma;
         next(null, { summary: view, fills: fills.map(function (fill) { return { price: fill.price, quantity: fill.quantity, fee: fill.fee }; }),

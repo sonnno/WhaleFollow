@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { request } from './api';
-import OrderDetail, { readableReason, executionTime, executionDelay } from './OrderDetail';
+import OrderDetail, { readableReason, executionTime, comparisonDelay, processingDelay } from './OrderDetail';
 import Leaderboards from './Leaderboards';
 import FollowTasks from './FollowTasks';
 import DailyReports from './DailyReports';
@@ -20,8 +20,8 @@ const ownAmountColumn=['gross','我们成交金额 · 不含费',(value,row)=>ro
 const sourcePriceColumn=['sourcePrice','原主成交价（赔率）',value=>value==null?'暂未取得':money(value)];
 const ownPriceColumn=['averagePrice','我们成交价（赔率）',(value,row)=>row.copyTime&&value!=null?money(value):'尚未成交'];
 const sourceTimeColumn=['sourceTime','原主成交时间 · 北京时间',executionTime];
-const copyTimeColumn=['copyTime','我们成交时间 · 北京时间',value=>value?executionTime(value):'尚未成交'];
-const delayColumn=['executionDelay','成交时间差',(_,row)=>row.copyTime?executionDelay(row.sourceTime,row.copyTime):'尚未成交'];
+const copyTimeColumn=['copyTime','我们成交时间 · 北京时间',(value,row)=>value?<span>{executionTime(value)}{row.copyClock==='legacy-database'&&<small className="cell-note">历史时间未校准</small>}</span>:'尚未成交'];
+const delayColumn=['executionDelay','成交时间差 · 约值',(_,row)=>row.copyTime?<span>{comparisonDelay(row)}<small className="cell-note">收到后到成交：{processingDelay(row)}</small></span>:'尚未成交'];
 const directionColumn=['outcome','买入 / 卖出方向',(value,row)=>marketFields(row).direction];
 const marketInfoColumn = ['category', '类型 / 玩法 / 盘口 / 官网', (value, row) => {const fields=marketFields(row);return <div className="market-info"><strong>{value || '分类待更新'}</strong><span>玩法：{fields.play}</span><span>盘口：{fields.line}</span>{fields.subject&&<span>投注对象：{fields.subject}</span>}{row.officialUrl ? <a className="official-link" href={row.officialUrl} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}>查看官网 ↗</a> : <span className="cell-note">官网链接待更新</span>}</div>; }];
 
