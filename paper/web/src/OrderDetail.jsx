@@ -2,8 +2,7 @@ import React from 'react';
 import {marketFields} from './market-fields';
 
 export function executionTime(value){if(!value||!Number.isFinite(Date.parse(value)))return'暂无成交时间';return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3,hour12:false}).format(new Date(value));}
-export function comparisonDelay(row){if(row.copyClock==='legacy-database')return'历史时间未校准';if(row.executionDelayMs==null||!Number.isFinite(Number(row.executionDelayMs)))return'无法准确计算';return'约 '+(Number(row.executionDelayMs)/1000).toFixed(3)+' 秒';}
-export function processingDelay(row){return row.receivedToExecutionMs==null?'暂无计时记录':(Number(row.receivedToExecutionMs)/1000).toFixed(3)+' 秒';}
+export function comparisonDelay(row){if(row.copyClock==='legacy-database'||row.executionDelayMs==null||!Number.isFinite(Number(row.executionDelayMs)))return'暂无数据';return(Number(row.executionDelayMs)/1000).toFixed(3)+' 秒';}
 
 const states = { pending: '待结算', settled: '已结算', sold: '已卖出', skipped: '未成交', waiting: '等待跟单 · 自动重试' };
 const reasons = { TASK_PAUSED: '该人的买入已暂停', TASK_STOPPED: '已停止跟买该人', TASK_GENERATION_CHANGED: '任务已重新启用，旧买单不补做', TASK_CONTROL_CANCELLED: '控制开关已取消这笔未执行买单', TASK_FUNDS_EXHAUSTED: '该人的独立账户现金不足，不会借用公共钱包', SHARED_FUNDS_EXHAUSTED: '公共钱包可用现金不足，独立账户预留不可动用', TASK_BUDGET_LIMIT: '该人的当前投入已达到新额度，等待卖出或结算后再跟买', ORDER_AMOUNT_LIMIT: '该来源订单已达到单笔含手续费上限', INSUFFICIENT_CASH: '剩余现金不足', MARKET_LIMIT: '该市场的投入已达到上限', SIGNAL_EXPIRED: '发现这笔交易时已超过允许跟单时间', PAUSED: '跟单已暂停', BUYS_PAUSED: '新增买入已暂停', PAUSED_AT_DISCOVERY: '发现交易时跟单处于暂停状态', LEADER_INACTIVE: '该人员已停止跟买', LEADER_CURRENTLY_INACTIVE: '该人员已停止跟买', BEFORE_CURRENT_JOIN: '交易发生在加入跟单之前', HISTORICAL: '历史交易，不补做买入', NO_OWN_POSITION: '没有可以卖出的持仓', SOURCE_SELL_FROM_OLD_POSITION_CYCLE: '这是上一轮持仓的卖出消息，不卖出新买的持仓', SOURCE_SELL_ALREADY_SATISFIED: '这笔来源卖单应跟卖的份额已全部卖出', LEADER_INVENTORY_UNVERIFIED: '来源人员的持仓数量尚未核实', STALE_BOOK: '报价已过期', QUOTE_MISSING: '未取得可用报价', NO_EXECUTABLE_DEPTH: '可成交的数量不足', MARKET_ALREADY_RESOLVED: '市场已经结算', MARKET_NOT_EXECUTABLE: '市场当前不能交易', UNSUPPORTED_OR_UNKNOWN_OUTCOME: '暂不支持此下注方向' };
@@ -33,9 +32,8 @@ export default function OrderDetail({ value, onClose, money, time, pnl, Table })
     ...(buy ? [{ label: '他本人买入金额 · 不含手续费', value: money(order.sourceAmount) + ' USDT' }, { label: '我们买入金额 · 不含手续费', value: money(order.gross) + ' USDT' }] : []),
     ...(buy ? [{ label: '原主买入价（赔率）· 每份 USDT', value: order.sourcePrice == null ? '暂无原主成交价' : money(order.sourcePrice) + ' USDT' }, { label: '我的买入价（赔率）· 每份 USDT', value: executed && order.averagePrice != null ? money(order.averagePrice) + ' USDT' : '尚未成交' }] : []),
     { label: '原主成交时间 · 北京时间', value: executionTime(order.sourceTime) },
-    { label: '我们的成交时间 · 北京时间', value: executed ? executionTime(order.copyTime)+(order.copyClock==='legacy-database'?'（历史时间未校准）':'') : '尚未成交' },
-    { label: '成交时间差 · 原主时间按官网记录', value: executed ? comparisonDelay(order) : '尚未成交' },
-    ...(executed ? [{ label: '我们收到成交数据的时间 · 北京时间', value: executionTime(order.receivedAt) }, { label: '收到数据至跟单成交 · 含排队和重试等待', value: processingDelay(order) }] : []),
+    { label: '我们的成交时间 · 北京时间', value: executed ? order.copyClock==='legacy-database'?'暂无准确时间':executionTime(order.copyTime) : '尚未成交' },
+    { label: '成交时间差', value: executed ? comparisonDelay(order) : '尚未成交' },
     ...(!executed ? [{ label: '记录时间', value: time(order.createdAt) }] : []),
     { label: '订单类型', value: order.category || '分类待更新' },
     { label: date[0], value: date[1] },
