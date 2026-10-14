@@ -116,6 +116,8 @@ services:
   worker:
     <<: *app
     command: [node, deploy/run.js, worker]
+    volumes:
+      - runtime:/var/lib/whalefollow
     depends_on:
       api:
         condition: service_healthy
