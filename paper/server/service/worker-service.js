@@ -6,7 +6,7 @@ const agent = require('../lib/network-agent');
 function create(db, redis, leaders, sources, markets, paper, dashboard, options) {
   options = options || {};
   const config = options.config || require('../../config').paper;
-  const health = { processId: process.pid, latencyVersion: 2,executionClockVersion:1,taskDeletionVersion:1,dailyReportVersion:1, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
+  const health = { processId: process.pid, latencyVersion: 3,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
   let stopped = false, socket, reconnect, heartbeat, activityFailures = 0;
   const timers = [], locks = new Set(), walletBusy = new Set(), inventoryBusy = new Set(), walletPending = new Set(), lastPeriodic = new Map(), tokenQueues = new Map(), admitted = new Set();
   let trackedWallets = config.followWallets && config.followWallets.length ? new Set(config.followWallets) : null;
@@ -70,7 +70,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
   sources.onSignal(function (_, signal) {
     health.discoveredSignals = (health.discoveredSignals || 0) + 1;
     health.lastSignalAt = new Date().toISOString();
-    if (signal) health.lastDiscoveryLagMs = Math.max(0, Date.now() - signal.timestamp * 1000);
+    if (signal) health.lastDiscoveryLagMs = Math.max(0, Date.parse(require('../lib/execution-clock').receipt().receivedAt) - signal.timestamp * 1000);
     wakeDispatch();
   });
   function dispatch(callback) {
@@ -186,8 +186,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       health.activityMessages = (health.activityMessages || 0) + 1;
       health.lastActivityMessageAt = new Date().toISOString();
       const value = message.payload || {};
-      const receivedAt = new Date().toISOString();
-      const receivedMonotonicMs = performance.now();
+      const { receivedAt, receivedMonotonicMs } = require('../lib/execution-clock').receipt();
       const wallet = String(value.proxyWallet || value.proxy_wallet || '').toLowerCase();
       if (!wallet) return;
       if (trackedWallets && !trackedWallets.has(wallet)) return;
@@ -195,7 +194,9 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
         if (stopped || err || !row) return;
         health.followedActivityMessages = (health.followedActivityMessages || 0) + 1;
         health.lastFollowedActivityAt = new Date().toISOString();
-        health.lastActivityLagMs = Math.max(0, Date.now() - Number(value.timestamp) * 1000);
+        health.lastActivityLagMs = Math.max(0, Date.parse(receivedAt) - Number(value.timestamp) * 1000);
+        const trade = require('./trade-signal-service').normalize(value);
+        if (trade && typeof markets.warm === 'function' && (row.active || trade.side === 'SELL')) markets.warm({ condition: trade.condition_id, token: trade.token_id, side: trade.side });
         if (!sources.ingestWebsocket) return pollWallet(wallet, function (error) { report('activity-trigger', error); });
         sources.ingestWebsocket(value, { generation: Number(row.raw && row.raw.followGeneration || 0), receivedAt, receivedMonotonicMs }, function (error, result) {
           report('activity-ingest', error);
@@ -234,6 +235,7 @@ function create(db, redis, leaders, sources, markets, paper, dashboard, options)
       every('equity', 2, snapshot, true);
       every('daily-report', 30, dailyReports.runDue, true);
       every('health', 5, function (next) { db.save('Setting', { id: 'worker-health', value: { ...health, market: markets.health } }, function (error) { next(error); }); }, true);
+      if (options.clockSync) every('clock-sync', 60, function (next) { options.clockSync(function (error, state) { if (!error) health.clock = state; next(error); }); });
       callback();
     });
   }

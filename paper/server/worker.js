@@ -6,7 +6,8 @@ const sources = require('./service/source-service').create(db);
 const markets = require('./service/market-service').create(db, redis);
 const paper = require('./service/paper-service').create(db, markets);
 const dashboard = require('./service/dashboard-service').create(db);
-const worker = require('./service/worker-service').create(db, redis, leaders, sources, markets, paper, dashboard);
+function clockSync(callback) { require('./lib/execution-clock').synchronize(require('./lib/http-client'), require('../config').paper.clobUrl, callback); }
+const worker = require('./service/worker-service').create(db, redis, leaders, sources, markets, paper, dashboard, { clockSync });
 const tasks = require('./service/follow-task-service').create(db);
 let releaseLease;
 async.waterfall([
@@ -15,6 +16,7 @@ async.waterfall([
   function (next) { redis.connect(function (err) { next(err); }); },
   function (next) { paper.initialize(function (err) { next(err); }); },
   function (next) { tasks.initialize(function (err) { next(err); }); },
+  function (next) { clockSync(function (error, state) { if (error) console.error('Official clock sync unavailable:', error.message); else worker.health.clock = state; next(); }); },
   function (next) { worker.start(next); }
 ], function (err) {
   if (err) { console.error('Worker start failed:', err.message); shutdown(); process.exitCode = 1; }

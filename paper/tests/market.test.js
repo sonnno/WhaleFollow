@@ -23,6 +23,17 @@ function fixture(options) {
 }
 const signal = { condition: 'condition', token: 'token', outcomeIndex: 0 };
 
+test('execution joins an in-flight warm preparation without duplicate book or metadata HTTP', function (_, done) {
+  const requests = [], callbacks = {};
+  const markets = service.create({ query: function (_, __, cb) { cb(null, []); } }, { get: function (_, cb) { cb(null, null); }, set: function () {} }, { http: { request: function (_, route, __, cb) { requests.push(route); callbacks[route] = cb; } } });
+  assert.equal(typeof markets.warm, 'function');
+  markets.warm({ ...signal });
+  markets.prepare({ ...signal }, function (err, quote) { assert.ifError(err); assert.equal(quote.outcomeIndex, 0); assert.equal(quote.book.asks[0].size, '7', 'warm lookup must not replay depth consumed by an earlier order'); assert.equal(requests.filter(function (route) { return route === '/book'; }).length, 1); assert.equal(requests.filter(function (route) { return route === '/clob-markets/condition'; }).length, 1); done(); });
+  callbacks['/book'](null, { asks: [{ price: '0.5', size: '10' }], bids: [], hash: 'warm-snapshot' });
+  markets.consume('token','BUY',[{price:'0.5',quantity:'3'}]);
+  callbacks['/clob-markets/condition'](null, { ao: true, t: [{ t: 'token' }, { t: 'other' }], fd: { r: 0, e: 1 } });
+});
+
 test('schedule refresh fetches each requested market and preserves its official deadline', function (_, done) {
   const saved = [];
   const db = { query: function (sql, values, cb) {

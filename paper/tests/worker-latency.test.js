@@ -23,7 +23,7 @@ function fixture(t) {
   const worker = create(db, redis, leaders, sources, markets, paper, dashboard);
   worker.start(function (err) { assert.ifError(err); });
   t.after(function () { worker.stop(function () {}); });
-  return { socket: Socket.last, db, redis, paper, dashboard, leaders, sources, worker, polls, inventories, queries, timers, notify: function () { assert.equal(typeof listener, 'function', 'new source signals must wake dispatch'); listener('new-intent'); }, notice: function () { Socket.last.emit('message', JSON.stringify({ topic: 'activity', type: 'trades', payload: { proxyWallet: wallet, timestamp: Date.now() / 1000 } })); } };
+  return { socket: Socket.last, db, redis, paper, dashboard, leaders, sources, markets, worker, polls, inventories, queries, timers, notify: function () { assert.equal(typeof listener, 'function', 'new source signals must wake dispatch'); listener('new-intent'); }, notice: function () { Socket.last.emit('message', JSON.stringify({ topic: 'activity', type: 'trades', payload: { proxyWallet: wallet, timestamp: Date.now() / 1000 } })); } };
 }
 test('slow inventory does not block discovering new trades', function (t) {
   const f = fixture(t);
@@ -64,6 +64,16 @@ test('complete activity trade directly ingests while source REST is stalled',fun
  f.sources.ingestWebsocket=function(payload,context,cb){received.push({payload,context});cb(null,{handled:true});};
  f.socket.emit('message',JSON.stringify({topic:'activity',type:'trades',payload:{proxyWallet:wallet,transactionHash:'0x'+'a'.repeat(64),asset:'123',conditionId:'0x'+'b'.repeat(64),side:'BUY',size:10,price:0.5,timestamp:Math.floor(Date.now()/1000)}}));
  assert.equal(received.length,1,'WS must bypass the pending poll');assert.equal(f.polls.length,1,'complete BUY does not initiate another REST poll');assert.ok(received[0].context.receivedAt);
+});
+
+test('verified WS trade warms the same quote before slow source ingestion', function (t) {
+ const f=fixture(t),events=[];
+ f.db.one=function(_,__,cb){cb(null,{id:wallet,active:true,raw:{followGeneration:1}});};
+ const warmPayloads=[];
+ f.markets.warm=function(signal){events.push('warm');warmPayloads.push(signal);};
+ f.sources.ingestWebsocket=function(_,__,cb){events.push('ingest');};
+ f.socket.emit('message',JSON.stringify({topic:'activity',type:'trades',payload:{proxyWallet:wallet,transactionHash:'0x'+'a'.repeat(64),asset:'123',conditionId:'0x'+'b'.repeat(64),side:'BUY',size:10,price:0.5,timestamp:Math.floor(Date.now()/1000)}}));
+ assert.deepEqual(events,['warm','ingest']);assert.equal(warmPayloads[0].token,'123');
 });
 
 test('dispatch selects only trading jobs and keeps source-confirmation barriers in ordering',function(t,done){

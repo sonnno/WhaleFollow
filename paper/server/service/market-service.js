@@ -11,6 +11,7 @@ function create(db, redis, dependencies) {
   const Socket = dependencies && dependencies.WebSocket || WebSocket;
   const books = new Map(), metadata = new Map(), tokens = new Set(), unavailable = new Set(), states = new Map();
   const metadataPending = new Map();
+  const preparationPending = new Map();
   let socket, stopped = false, reconnect, ping, resolutionListener;
   const health = { connected: false, lastMessage: null, error: null };
   function publish(token, book) {
@@ -111,10 +112,10 @@ function create(db, redis, dependencies) {
       saveSchedule(raw, function (error) { if (!error) states.set(signal.token, { observedAt: Date.now() }); callback(error); });
     });
   }
-  function prepare(signal, callback) {
+  function prepareLookup(signal, callback) {
     if (!isExecutable(signal)) return callback(new Error('Market is not executable'));
     let params, book;
-    const state = states.get(signal.condition);
+    const state = states.get(signal.condition) || states.get(signal.token);
     async.waterfall([
       function (next) { async.parallel({ metadata: function (done) { getMetadata(signal.condition, done, !state || Date.now() - state.observedAt >= config.bookMaxAgeMs); }, book: function (done) { getBook(signal.token, done, signal.refreshBook === true); } }, next); },
       function (values, next) {
@@ -127,11 +128,22 @@ function create(db, redis, dependencies) {
       },
       function (next) {
         function complete() { if (!isExecutable(signal)) return next(new Error('Market is not executable')); next(null, { metadata: params, book, outcomeIndex: signal.outcomeIndex }); }
-        if (Date.now() - book.observedAt <= config.bookMaxAgeMs) return complete();
+        // Re-read locally consumed/updated depth after waiting for metadata or state.
+        // Warm preparation can overlap an earlier order on the same token.
         getBook(signal.token, function (err, fresh) { if (err) return next(err); book = fresh; complete(); });
       }
     ], callback);
   }
+  function prepare(signal, callback) {
+    const key = signal.condition + ':' + signal.token + ':' + (signal.refreshBook === true ? 'refresh' : 'current');
+    if (preparationPending.has(key)) { preparationPending.get(key).push({ signal, callback }); return; }
+    preparationPending.set(key, [{ signal, callback }]);
+    prepareLookup(signal, function (err, value) {
+      const waiting = preparationPending.get(key); preparationPending.delete(key);
+      waiting.forEach(function (entry) { if (value) entry.signal.outcomeIndex = value.outcomeIndex; entry.callback(err, value); });
+    });
+  }
+  function warm(signal) { prepare(signal, function () {}); }
   function consume(token, side, fills) {
     const book = books.get(token);
     if (!book) return;
@@ -197,6 +209,6 @@ function create(db, redis, dependencies) {
       }, callback);
     });
   }
-  return { prepare, consume, mark, resolutions, schedules, saveSchedule, isExecutable, health, onResolved: function (listener) { resolutionListener = listener; }, start: connect, stop: function () { stopped = true; clearInterval(ping); clearTimeout(reconnect); if (socket) socket.terminate(); } };
+  return { prepare, warm, consume, mark, resolutions, schedules, saveSchedule, isExecutable, health, onResolved: function (listener) { resolutionListener = listener; }, start: connect, stop: function () { stopped = true; clearInterval(ping); clearTimeout(reconnect); if (socket) socket.terminate(); } };
 }
 module.exports = { create };
