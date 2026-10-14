@@ -106,7 +106,8 @@ function create(db, options) {
           if (validInventory && !historical && group.origin !== 'websocket') leader.inventory[group.token] = str(group.side === 'BUY' ? D(before).plus(inventoryTotal) : D(before).minus(inventoryTotal).clamp(0, Infinity));
           const sourceAmount = Object.entries(merged.quantities).reduce(function (value, [p, q]) { return value.plus(D(p).mul(q)); }, D(0));
           const source = { ...group, raw: { ...merged.raw, wsSellPending: false }, quantities: merged.quantities, processed: merged.quantities, budget: str(sourceAmount) };
-          if (total.isZero()) return store.save(tx, null, leader, function (error) { if (error) return next(error); saveDuplicate(function (failure) { next(failure, null); }); });
+          const inventoryChanged = validInventory && !historical && group.origin !== 'websocket' && inventoryTotal.gt(0);
+          if (total.isZero()) return store.save(tx, null, leader, function (error) { if (error) return next(error); saveDuplicate(function (failure) { next(failure, null); }); }, inventoryChanged);
           async.waterfall([
             function (save) {
               if (group.side !== 'SELL') return save();
@@ -114,7 +115,7 @@ function create(db, options) {
             },
             function (save) { save(null, runtime); },
             function (runtime, save) { signal.pausedAtDiscovery = runtime ? (runtime.value.pauseAll || runtime.value.pauseBuys && signal.side === 'BUY') : false; save(); },
-            function (save) { store.save(tx, source, leader, function (err) { save(err); }); },
+            function (save) { store.save(tx, source, leader, function (err) { save(err); }, inventoryChanged); },
             function (save) {
               if (group.side !== 'SELL' || !stored || !stored.raw.wsSellPending) return save(null, null);
               tx.one('Outbox', { where: { id: barrierId } }, save);
