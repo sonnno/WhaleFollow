@@ -1,4 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),async=require('async');
+require('./helpers/source-store-mock')();
 const source=require('../server/service/source-service');
 const wallet='0x'+'a'.repeat(40),hash='0x'+'b'.repeat(64),condition='0x'+'c'.repeat(64);
 function packet(fields){return {proxyWallet:wallet,transactionHash:hash,asset:'123',conditionId:condition,side:'BUY',price:0.5,size:3,timestamp:Math.floor(Date.now()/1000),outcomeIndex:0,...fields};}

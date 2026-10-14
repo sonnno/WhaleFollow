@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+require('./helpers/source-store-mock')();
 
 test('multiple identical fills in a transaction are summed, not dropped', function () {
   const source = require('../server/service/source-service');

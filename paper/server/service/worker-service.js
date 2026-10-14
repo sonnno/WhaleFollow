@@ -6,7 +6,7 @@ const agent = require('../lib/network-agent');
 function create(db, redis, leaders, sources, markets, paper, dashboard, options) {
   options = options || {};
   const config = options.config || require('../../config').paper;
-  const health = { processId: process.pid, latencyVersion: 5,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1,persistenceVersion:2, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
+  const health = { processId: process.pid, latencyVersion: 6,executionClockVersion:2,taskDeletionVersion:1,dailyReportVersion:1,persistenceVersion:2,sourcePersistenceVersion:2, activityConnected: false, lastTradePoll: null, lastBoardRefresh: null, lastSettlement: null, lastError: null, startedAt: new Date().toISOString() };
   let stopped = false, socket, reconnect, heartbeat, activityFailures = 0;
   const timers = [], locks = new Set(), walletBusy = new Set(), inventoryBusy = new Set(), walletPending = new Set(), lastPeriodic = new Map(), tokenQueues = new Map(), admitted = new Set();
   let trackedWallets = config.followWallets && config.followWallets.length ? new Set(config.followWallets) : null;

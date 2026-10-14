@@ -4,6 +4,7 @@ const { D, str } = require('./accounting-service');
 const http = require('../lib/http-client');
 const config = require('../../config').paper;
 const signals = require('./trade-signal-service');
+const store = require('./source-store');
 
 function groupTrades(rows) {
   const groups = new Map();
@@ -52,13 +53,15 @@ function create(db, options) {
   function ingest(group, callback) {
     let createdSignal;
     db.transaction(function (tx, done) {
-      let stored, leader;
+      let stored, leader, runtime;
       async.waterfall([
         function (next) { tx.query('SELECT id FROM paper_accounts WHERE id=$1 FOR UPDATE', ['paper'], next); },
-        function (_, next) { if (!group.reconciliationJobId) return next(null, null); tx.one('Outbox', { where: { id: group.reconciliationJobId } }, next); },
-        function (job, next) { if (group.reconciliationJobId && (!job || job.status !== 'pending')) return done(null, { stale: true }); tx.one('Setting', { where: { id: 'quarantine:' + group.id } }, next); },
-        function (quarantine, next) { if (quarantine) return done(null, { quarantined: true }); tx.one('Source', { where: { id: group.id } }, next); },
-        function (row, next) { stored = row; tx.one('Leader', { where: { id: group.wallet } }, next); },
+        function (_, next) { store.read(tx, group, next); },
+        function (context, next) {
+          if (group.reconciliationJobId && (!context.job || context.job.status !== 'pending')) return done(null, { stale: true });
+          if (context.quarantine) return done(null, { quarantined: true });
+          stored = context.source; runtime = context.runtime; next(null, context.leader);
+        },
         function (row, next) {
           leader = row;
           if (!leader) return next(null, null);
@@ -75,7 +78,7 @@ function create(db, options) {
           const barrierId = group.id + ':source-confirmation';
           function saveDuplicate(finished) {
             if (!stored || !merged.raw.wsQuantities && !(stored.raw && stored.raw.wsSellPending)) return finished();
-            tx.save('Source', { ...stored, quantities: merged.quantities, raw: { ...merged.raw, wsSellPending: false } }, function (error) {
+            store.save(tx, { ...stored, quantities: merged.quantities, raw: { ...merged.raw, wsSellPending: false } }, null, function (error) {
               if (error) return finished(error);
               if (group.origin === 'websocket') return queueReconciliation(tx, group, Number(leader.raw.followGeneration || 0), finished);
               tx.query("UPDATE paper_outbox SET status='done',error='',\"updatedAt\"=clock_timestamp() WHERE id=$1 AND kind='source-confirmation'", [barrierId], function (failure) { finished(failure); });
@@ -103,16 +106,15 @@ function create(db, options) {
           if (validInventory && !historical && group.origin !== 'websocket') leader.inventory[group.token] = str(group.side === 'BUY' ? D(before).plus(inventoryTotal) : D(before).minus(inventoryTotal).clamp(0, Infinity));
           const sourceAmount = Object.entries(merged.quantities).reduce(function (value, [p, q]) { return value.plus(D(p).mul(q)); }, D(0));
           const source = { ...group, raw: { ...merged.raw, wsSellPending: false }, quantities: merged.quantities, processed: merged.quantities, budget: str(sourceAmount) };
-          if (total.isZero()) return tx.save('Leader', leader, function (error) { if (error) return next(error); saveDuplicate(function (failure) { next(failure, null); }); });
+          if (total.isZero()) return store.save(tx, null, leader, function (error) { if (error) return next(error); saveDuplicate(function (failure) { next(failure, null); }); });
           async.waterfall([
             function (save) {
               if (group.side !== 'SELL') return save();
               tx.query("SELECT id FROM paper_source_trades WHERE wallet=$1 AND token=$2 AND timestamp<=$3 AND id<>$4 AND raw->>'wsPendingInventory'='true' LIMIT 1", [group.wallet, group.token, group.timestamp, group.id], function (error, rows) { if (error) return save(error); if (rows.length) return done(null, { waitingForBuyReconciliation: true }); save(); });
             },
-            function (save) { tx.one('Setting', { where: { id: 'runtime' } }, save); },
+            function (save) { save(null, runtime); },
             function (runtime, save) { signal.pausedAtDiscovery = runtime ? (runtime.value.pauseAll || runtime.value.pauseBuys && signal.side === 'BUY') : false; save(); },
-            function (save) { tx.save('Source', source, function (err) { save(err); }); },
-            function (save) { tx.save('Leader', leader, function (err) { save(err); }); },
+            function (save) { store.save(tx, source, leader, function (err) { save(err); }); },
             function (save) {
               if (group.side !== 'SELL' || !stored || !stored.raw.wsSellPending) return save(null, null);
               tx.one('Outbox', { where: { id: barrierId } }, save);

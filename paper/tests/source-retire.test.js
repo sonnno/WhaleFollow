@@ -1,4 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict');
+require('./helpers/source-store-mock')();
 for(const readded of [false,true])test('an HTTP response from a deleted '+(readded?'and recreated ':'')+'task cannot restore source records or its checkpoint',function(t,done){
  let response,leader={id:'wallet',joinedAt:new Date(0),inventory:{},raw:{followGeneration:3},active:true};const writes=[];
  const tx={query:function(_,__,cb){cb(null,[]);},one:function(kind,_,cb){cb(null,kind==='Leader'?leader:null);},save:function(kind,row,cb){writes.push(kind);cb(null,row);},insert:function(kind,row,cb){writes.push(kind);cb(null,row);}};
