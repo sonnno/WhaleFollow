@@ -1,3 +1,4 @@
+const i18n = require('./helpers/i18n.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), vm = require('node:vm'), esbuild = require('esbuild');
@@ -5,7 +6,7 @@ function helpers() {
   const file = 'web/src/Leaderboards.jsx';
   assert.ok(fs.existsSync(file), '排行榜查询页面尚未实现');
   const module = { exports: {} };
-  vm.runInNewContext(esbuild.transformSync(fs.readFileSync(file, 'utf8'), { loader: 'jsx', format: 'cjs' }).code, { module, exports: module.exports, URLSearchParams, require: function (name) { if (name === 'react') return {}; if (name === './api') return {}; throw new Error(name); } });
+  vm.runInNewContext(esbuild.transformSync(fs.readFileSync(file, 'utf8'), { loader: 'jsx', format: 'cjs' }).code, { module, exports: module.exports, URLSearchParams, require: function (name) {if(name==='./i18n')return i18n;if(name==='./LanguageSwitcher')return()=>null; if (name === 'react') return {}; if (name === './api') return {}; throw new Error(name); } });
   return module.exports;
 }
 test('cursor pages preserve the exact official continuation token and permit going back', function () {

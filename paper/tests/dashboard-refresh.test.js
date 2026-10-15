@@ -1,3 +1,4 @@
+const i18n = require('./helpers/i18n.cjs');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -21,9 +22,9 @@ function screen() {
   const module = { exports: {} };
   vm.runInNewContext(source, {
     module, exports: module.exports,
-    require: function (name) {
+    require: function (name) {if(name==='./i18n')return i18n;if(name==='./LanguageSwitcher')return()=>null;
       if (name === 'react') return React;
-      if (name === './market-fields') return { marketFields: function () { return {}; } };
+      if ((name === './market-fields' || name === './market-fields-view')) return { marketFields: function () { return {}; } };
       if (name === './api') return { request: function (route, body, callback) { requests.push({ route, callback }); } };
       if (name === './OrderDetail') return { default: function () {}, readableReason: function (value) { return value; } };
       if (name === './Leaderboards' || name === './FollowTasks'||name==='./DailyReports'||name==='./MarketStatistics') return { default: function () {} };

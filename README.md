@@ -11,7 +11,7 @@
 
 WhaleFollow helps answer a practical question: **what happens when I follow this trader with my own bankroll and sizing rules?** Browse public leaderboards, create multiple follow tasks, and inspect copied orders, positions, fees, and realized profit in one dashboard.
 
-This repository contains the **paper trading edition**. It does not place real orders and does not require a private key, seed phrase, trading API key, or wallet approval. The dashboard uses Chinese; project documentation is available in English and Traditional Chinese.
+This repository contains the **paper trading edition**. It does not place real orders and does not require a private key, seed phrase, trading API key, or wallet approval. The dashboard and documentation are available in **Traditional Chinese and English**. Choose **繁體中文 / English** with the flag buttons on the login screen or under **System settings → Interface language**. The choice applies immediately and is saved in the current browser.
 
 ## Features
 

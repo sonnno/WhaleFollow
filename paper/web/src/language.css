@@ -1,0 +1,10 @@
+.language-switcher { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.language-switcher button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: auto; margin: 0; min-height: 38px; padding: 7px 11px; border: 1px solid #cddbd9; border-radius: 5px; background: #fff; color: #516c74; cursor: pointer; font: inherit; font-size: 13px; line-height: 1.25; white-space: nowrap; }
+.language-switcher button:hover { background: #f2f7f5; color: #164f4d; }
+.language-switcher button[aria-pressed="true"] { border-color: #287e70; background: #e2f2eb; color: #164f4d; }
+.language-switcher button:focus-visible { outline: 2px solid #52a39a; outline-offset: 3px; }
+.language-switcher svg { display: block; width: 26px; height: auto; flex-shrink: 0; border-radius: 2px; box-shadow: 0 0 0 1px #ffffff26; }
+.login { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px; }
+.login-language { width: min(100%, 410px); display: flex; justify-content: flex-end; }
+.login .language-switcher button { width: auto; margin: 0; }
+.language-settings .language-switcher { margin-bottom: 6px; }

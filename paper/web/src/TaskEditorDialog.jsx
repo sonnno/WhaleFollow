@@ -1,3 +1,5 @@
+/* explicit-ui-i18n */
+import { t, translateHumanMessage, getIntlLocale, useLanguage } from './i18n';
 import React, {useEffect,useRef} from 'react';
 
 export default function TaskEditorDialog({title,busy,onClose,children}){
@@ -12,5 +14,5 @@ export default function TaskEditorDialog({title,busy,onClose,children}){
   document.addEventListener('keydown',key);
   return()=>{document.removeEventListener('keydown',key);document.body.style.overflow=overflow;previous?.focus();};
  },[]);
- return <div className="task-editor-overlay" onMouseDown={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}><section ref={panel} className="task-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="task-editor-title" tabIndex={-1}><div className="board-result-heading"><h2 id="task-editor-title">{title}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose} aria-label="关闭任务设置">关闭</button></div>{children}</section></div>;
+ return <div className="task-editor-overlay" onMouseDown={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}><section ref={panel} className="task-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="task-editor-title" tabIndex={-1}><div className="board-result-heading"><h2 id="task-editor-title">{t(title)}</h2><button type="button" className="secondary" disabled={busy} onClick={onClose} aria-label={t("关闭任务设置")}>{t("关闭")}</button></div>{t(children)}</section></div>;
 }

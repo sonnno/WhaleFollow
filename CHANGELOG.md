@@ -1,5 +1,11 @@
 # Changelog / 更新記錄
 
+## 1.1.0 — 2026-10-15
+
+The dashboard now supports Traditional Chinese and English. Flag and language-name buttons appear on the login screen and in System settings, switch immediately, and remember the choice in the current browser. Application labels, forms, reports, statuses and dates follow the selected language; trader names and official market titles retain their original text.
+
+後台介面新增繁體中文及英文。登入頁與系統設定提供國旗及語言名稱按鈕，切換立即生效，並儲存目前瀏覽器的選擇。表單、查詢、報表、狀態與日期依語言顯示；交易員名稱及官方市場標題保留原文。跟單執行、資金及日結邏輯維持不變。
+
 
 ## 1.0.1 — 2026-10-15
 
