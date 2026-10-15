@@ -17,3 +17,13 @@ runtime/
 **/config/local.json
 **/node_modules/
 **/web/dist/
+**/data/
+**/credentials.json
+**/live-submitted-orders.json
+**/unrecorded-*-orders.jsonl
+*.pem
+*.key
+*.p12
+*.pfx
+.backups/
+reports/

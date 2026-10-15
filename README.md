@@ -1,51 +1,100 @@
-# 随鲸 WhaleFollow · 虚拟跟单
+# WhaleFollow
 
-独立的Polymarket虚拟跟单系统。Node.js后台和Worker、React管理页面、PostgreSQL账本、Redis缓存；没有真钱下单功能，不需要私钥、API密钥或钱包授权。
+**A self-hosted Polymarket copy trading simulator. Follow public traders, test position sizing, and keep an auditable paper ledger.**
 
-## Debian一条命令启动
+[中文说明](README.zh-CN.md) · [Deployment](docs/deployment.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
-使用Debian12/13，安装Docker Engine和Compose插件。建议2核2GB起步，只运行这一套；同时部署其他应用建议4GB。服务器不需要另装Node、PostgreSQL或Redis。
+[![Paper validation](https://github.com/sonnno/WhaleFollow/actions/workflows/paper-ci.yml/badge.svg)](https://github.com/sonnno/WhaleFollow/actions/workflows/paper-ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Node.js 24](https://img.shields.io/badge/Node.js-24-green.svg)
+![Docker Compose](https://img.shields.io/badge/Deploy-Docker_Compose-2496ED.svg)
 
-仓库是私有的，需要先用有权限的GitHub账号登录。已安装GitHub CLI时运行`gh auth login`，然后：
+WhaleFollow helps answer a practical question: **what happens when I follow this trader with my own bankroll and sizing rules?** Browse public leaderboards, create multiple follow tasks, and inspect copied orders, positions, fees, and realized profit in one dashboard.
+
+This repository contains the **paper trading edition**. It does not place real orders and does not require a private key, seed phrase, trading API key, or wallet approval. The dashboard currently uses Simplified Chinese; project documentation is available in English and Chinese.
+
+## Features
+
+| Area | What you can do |
+| --- | --- |
+| Leaderboards | Browse supported official trader, biggest-win and builder leaderboards; filter periods/categories and paginate where supported. |
+| Follow tasks | Follow multiple public wallet addresses; set a required copy percentage, total exposure budget and optional per-order cap. |
+| Funds | Share a virtual wallet or assign a dedicated account to each trader, with manual transfers in and out. |
+| Execution | Process complete WebSocket trade notifications directly, then persist simulated fills and ledger changes. |
+| Order detail | Compare source/copied amounts, execution prices and times; inspect market type, outcome, line and official market link. |
+| Accounting | Track remaining cash, unsettled investment, positions, fees, sales and final settlements. Filter records by followed trader. |
+| Reports | Query paginated market results and fixed daily reports, including task breakdowns and available source-trader data. |
+| Controls | Pause new buys globally or per task; show balance warnings triggered by insufficient-funds attempts. |
+
+Tasks share one Worker and market subscriptions to limit resource usage. Dedicated accounts keep their own cash, positions and profit records; they do not receive automatic top-ups from the shared wallet.
+
+## Quick start
+
+Prerequisites: Git, Docker Engine and the Docker Compose plugin. A Debian host with **2 vCPUs / 2 GB RAM** is a starting point for one small deployment; monitor usage as tasks and history grow. You do not need to install Node.js, PostgreSQL or Redis on the host.
 
 ```bash
-gh repo clone sonnno/WhaleFollow
+git clone https://github.com/sonnno/WhaleFollow.git
 cd WhaleFollow
 docker compose up -d
 ```
 
-首次运行会自动构建镜像、生成并保存密码、启动数据库和Redis、执行TypeORM建表、启动后台和Worker。初始虚拟本金350美元，没有自动开始的跟单任务。第一次需要下载镜像和npm包，耗时取决于网络。
+The first run builds the image, creates persistent credentials, starts PostgreSQL and Redis, applies database migrations, and starts the API and Worker. The default virtual bankroll is **350**, with **no follow tasks started automatically**.
 
-打开`http://服务器IP:3000`。查看管理员登录信息：
+Open `http://localhost:3000` or your server's port 3000. Retrieve the generated login:
 
 ```bash
 docker compose exec api node deploy/show-login.js
 ```
 
-默认用户名`admin`，密码首次随机生成；重启不会更换密码。后台新建任务、转入资金和点击“开始跟单”后才跟新交易。所有金额只是模拟记账。
+The default username is `admin`; the password is generated on first boot and retained across restarts. Restrict access to the dashboard and use HTTPS when exposing it beyond a trusted network. PostgreSQL and Redis are not published on host ports.
 
-在Lightsail防火墙放行TCP3000，来源限制为你的IP。长期通过公网访问时配置域名和HTTPS反向代理。PostgreSQL和Redis没有映射到服务器外部端口。
+Then:
 
-## 查看运行情况
+1. Open **排行榜** (Leaderboards), select a trader, or paste a public wallet address in **跟单任务** (Follow tasks).
+2. Choose shared or dedicated funds. For a dedicated account, enter an initial transfer amount.
+3. Set the copy percentage. **100% means the same source trade amount, not 100% of your wallet.**
+4. Choose **保存并开始跟单** (Save and start). Saving without starting leaves the task paused.
+5. Inspect the overview, order details and daily reports as new public trades arrive.
 
-```bash
-docker compose ps -a
-docker compose logs --tail=100 api worker migrate
-docker stats --no-stream
+## Accounting you can inspect
+
+- **Realized profit** comes from copied sales and final settlements, including the corresponding simulated trading fees. Unsettled price movements are excluded.
+- **Unsettled investment** is remaining position cost, including entry fees. It is not cash and is not guaranteed settlement proceeds.
+- **Daily close:** at **10:00 Asia/Shanghai (UTC+8)**, the Worker records the previous calendar day, from 00:00 to 24:00. For example, October 14 is published on October 15 at 10:00. The overview reads these saved reports; it does not label today's running total as a completed day.
+- Reports include total and per-task results. Public source-trader figures remain marked unavailable when the upstream data cannot establish them; they are not replaced with invented zeroes.
+- Dedicated-account transfers move internal paper funds. Changing an exposure budget does not transfer cash, and profits stay in the dedicated account until manually transferred out.
+
+## Execution behavior
+
+```mermaid
+flowchart LR
+    A[Public Polymarket data] --> B[WebSocket trade notification]
+    B --> C[Task and funds in memory]
+    C --> D[Simulated execution]
+    D --> E[PostgreSQL ledger]
+    E --> F[Dashboard and daily reports]
 ```
 
-`bootstrap`和`migrate`显示`Exited (0)`是正常的；postgres、redis、api、worker应该运行并逐步变为healthy。Worker就绪后仍需在后台检查Polymarket连接状态；本地启动成功不代表外部API永远可用。日志自动轮转，防止占满硬盘。
+Complete trade notifications do not wait for a source-trade REST lookup before simulated execution. A failed attempt is retried immediately, with at most three failed attempts total. Insufficient funds trigger a wallet warning without creating an order. Restarting or resuming does **not** backfill missed buy orders. Existing positions continue through copied sales and settlement while new buys are paused.
 
-## 停止、重启、更新
+Paper results are a model, not a live-execution guarantee. Public-feed delay, order-book changes, liquidity, fees and real matching can change outcomes. Source timestamps may only have second precision, so displayed time differences are not precise network benchmarks. There is no promised return and no affiliation with Polymarket.
+
+## Operations
 
 ```bash
-# 停止程序，保留全部数据
+# Inspect services and recent logs
+docker compose ps -a
+docker compose logs --tail=100 api worker
+docker stats --no-stream
+
+# Stop while retaining data
 docker compose down
-# 再次启动，沿用数据和密码
+
+# Start again with existing data and credentials
 docker compose up -d
 ```
 
-更新代码时先停止旧进程，避免旧API/Worker占用数据库迁移锁：
+To update, stop services before migrations:
 
 ```bash
 docker compose down
@@ -53,50 +102,11 @@ git pull --ff-only
 docker compose up -d --build
 ```
 
-不要使用`docker compose down -v`：它会删除数据库、Redis和密码卷。不要单独删除runtime卷：数据库已有密码会与新密码不匹配。服务器重启后数据库、Redis、API和Worker自动恢复；首次建表服务不用重复常驻。
+**Do not use `docker compose down -v` unless you intend to delete persistent data.** Back up both the database and runtime credentials. See the [deployment guide](docs/deployment.md) for configuration, backups, port changes and troubleshooting.
 
-## 可选配置
+## Development
 
-无需复制.env即可默认启动。如果要改端口或初始本金，可在首次启动前：
-
-```bash
-cp .env.example .env
-chmod 600 .env
-nano .env
-docker compose up -d
-```
-
-`PORT`是服务器访问端口，容器后台固定3000。`INITIAL_CASH`仅影响全新数据库，不会修改已有余额。想使用自己设定的管理员用户名/密码，可在第一次启动前填写；留空则随机生成。`SESSION_SECRET`如自行设置至少32字符。生成后改凭据环境变量会明确报错，避免静默改密码导致数据库连接失败。现阶段密码持久化后需要保留，不提供在线改密码功能。
-
-默认采用共享Compose项目名whalefollow。不要在同一台服务器重复启动同一个项目；要开第二个独立测试实例须显式使用不同的`-p`项目名和PORT。所有卷均按项目名隔离。
-
-PostgreSQL预设共享内存128MB和低内存参数，后台256MB、Worker640MB、数据库512MB、Redis128MB上限。预算是起步配置，任务和数据增长后应查看docker stats；不要依靠频繁交换内存维持跟单。
-
-## 备份和恢复
-
-数据库和密码都需要备份，备份文件不要提交Git：
-
-```bash
-mkdir -p backups
-chmod 700 backups
-docker compose exec -T postgres pg_dump -U whalefollow -d whalefollow_paper -Fc > backups/paper.dump
-docker compose exec -T api tar -C /var/lib/whalefollow -czf - . > backups/runtime.tar.gz
-chmod 600 backups/*
-```
-
-恢复请先在隔离环境验证，不要直接覆盖当前跟单账户。Redis数据持久化在redis-data卷；上面的数据库备份不包含Redis队列，完整灾备还需在停止服务后保存该卷。runtime备份包含登录和数据库密码，应妥善保管。
-
-## 成交时间和耗时
-
-页面只显示原主成交时间、我们的成交时间和两者差值。Worker启动时及每分钟通过官方CLOB `/time`校准应用内时钟，取三次请求中往返最快的样本，再用单调时钟生成成交时间；不修改操作系统时间。原主时间保留Polymarket官方记录。官方接口只精确到秒，校准还受网络往返误差影响，因此页面差值不能视为毫秒级精密测量。校准失败会保留上次成功结果；首次校准失败会记录警告并使用本机时间，交易继续。
-
-完整WebSocket成交通知直接进入跟单执行。任务比例、暂停和资金快照在内存中读取；先模拟成交并预留资金，然后原子记录余额、持仓、订单和流水。成交失败立即尝试，累计3次后结束；余额不足不生成订单，首页显示对应钱包预警。账户成功成交后才清除预警。
-
-已删除源单入库前置、Redis投递、历史交易补单和延时重试。重启不会补做旧买入。当前盘口来自持续更新的盘口流，最终成交均价按实际模拟份额计算。原主成交时间只精确到秒，页面差值还包含上游通知延迟。
-
-Worker可写runtime卷，用于成交成功但记录失败时保存回执；API和迁移服务只读。回执未核对时保持停止新执行，不重新买入。钱包预警和金融记录保存在PostgreSQL中。数据库和Redis均为内部容器，不安装到宿主机。
-
-## 开发与验证
+Stack: **Node.js 24 · async callbacks · TypeORM · PostgreSQL 16 · Redis 7 · React 19 · Vite 6**.
 
 ```bash
 cd paper
@@ -106,6 +116,10 @@ npm run check
 npm run web:build
 ```
 
-Docker仅复制源码和构建所需文件，排除.env、config/local.json、node_modules、日志、运行报告和本地数据。默认示例中的本地数据库配置用于开发；Docker部署用独立随机密码。
+Business logic lives in services and uses `async.waterfall` / error-first callbacks. The TypeORM adapter handles its Promise-based boundary. CI also exercises fresh Compose boot, isolated financial SQL checks and persistent restart.
 
-官方安装文档：[Debian Docker Engine](https://docs.docker.com/engine/install/debian/)。
+Contributions are welcome: reproducible bug reports, accounting tests, deployment improvements and UI translations. Read [CONTRIBUTING.md](CONTRIBUTING.md); report sensitive issues through [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) · Copyright © 2026 sonnno.
