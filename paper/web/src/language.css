@@ -3,7 +3,6 @@
 .language-switcher button:hover { background: #f2f7f5; color: #164f4d; }
 .language-switcher button[aria-pressed="true"] { border-color: #287e70; background: #e2f2eb; color: #164f4d; }
 .language-switcher button:focus-visible { outline: 2px solid #52a39a; outline-offset: 3px; }
-.language-switcher svg { display: block; width: 26px; height: auto; flex-shrink: 0; border-radius: 2px; box-shadow: 0 0 0 1px #ffffff26; }
 .login { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 18px; }
 .login-language { width: min(100%, 410px); display: flex; justify-content: flex-end; }
 .login .language-switcher button { width: auto; margin: 0; }

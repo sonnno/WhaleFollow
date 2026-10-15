@@ -46,7 +46,7 @@ function screen(initial, blocked = false) {
 }
 function buttons(tree) { return React.Children.toArray(tree.props.children).filter(child => child?.type === 'button'); }
 
-test('selector is an accessible group with Taiwan/US vectors, names and selected state', () => {
+test('selector is an accessible text-only group with names and selected state', () => {
   const app = screen(), tree = app.tree(), choices = buttons(tree);
   assert.equal(tree.props.role, 'group');
   assert.ok(tree.props['aria-label']);
@@ -56,8 +56,7 @@ test('selector is an accessible group with Taiwan/US vectors, names and selected
   const html = renderToStaticMarkup(tree);
   assert.match(html, /繁體中文/);
   assert.match(html, /English/);
-  assert.equal((html.match(/<svg/g) || []).length, 2);
-  assert.equal((html.match(/aria-hidden="true"/g) || []).length, 2);
+  assert.doesNotMatch(html, /<svg/);
   assert.doesNotMatch(html, /<img|https?:|🇹🇼|🇺🇸/);
 });
 test('clicking either choice changes language immediately and cannot submit a containing form', () => {
