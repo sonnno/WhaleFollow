@@ -1,23 +1,23 @@
 ---
-name: Bug report / 问题反馈
-about: Report reproducible behavior / 提交可复现的问题
+name: Bug report / 問題反饋
+about: Report reproducible behavior / 提交可復現的問題
 title: "[Bug] "
 labels: bug
 ---
 
-### Expected behavior / 预期行为
+### Expected behavior / 預期行為
 
-### Actual behavior / 实际行为
+### Actual behavior / 實際行為
 
-### Steps to reproduce / 复现步骤
+### Steps to reproduce / 復現步驟
 
-### Environment / 环境
+### Environment / 環境
 
 - Release or commit / 版本:
 - Docker / Node:
-- OS / 系统:
+- OS / 系統:
 
-### Redacted logs / 脱敏日志
+### Redacted logs / 脫敏日誌
 
 Do not paste credentials, private keys, database dumps or personal account history.
-不要粘贴凭据、私钥、数据库备份或个人账户完整记录。
+不要貼上憑據、私鑰、資料庫備份或個人賬戶完整記錄。

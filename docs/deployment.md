@@ -1,6 +1,6 @@
 # Deployment and operations
 
-[中文](deployment.zh-CN.md) · [Project overview](../README.md)
+[繁體中文](deployment.zh-Hant.md) · [Project overview](../README.md)
 
 ## Start on Debian
 

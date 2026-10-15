@@ -1,4 +1,11 @@
-# Changelog / 更新记录
+# Changelog / 更新記錄
+
+
+## 1.0.1 — 2026-10-15
+
+Documentation and GitHub presentation now use English and Traditional Chinese. Chinese guides use the `zh-Hant` filenames, and links, community templates and release notes are updated. Application execution and accounting behavior are unchanged.
+
+公開文件與 GitHub 專案介紹統一使用繁體中文與英文。中文指南改用 `zh-Hant` 檔名，同步更新連結、社群範本與發佈說明。跟單執行及帳務邏輯維持不變。
 
 ## 1.0.0 — 2026-10-15
 
@@ -13,16 +20,16 @@ First public paper-trading release of WhaleFollow.
 - Source/copied prices and times, market metadata and official market links.
 - Positions, settlements, fees, realized-profit statistics and daily task reports.
 - Docker Compose deployment with generated persistent credentials, migrations and health checks.
-- English and Chinese project/deployment documentation, MIT licensing and contribution guidance.
+- English and Traditional Chinese project/deployment documentation, MIT licensing and contribution guidance.
 
 ### Fixed
 
 - The overview's daily profit table now reads saved daily reports instead of grouping today's live settlements. Reports close at 10:00 Asia/Shanghai for the previous calendar day.
 
-### 中文
+### 繁體中文
 
-首个公开发布的虚拟跟单版本，包含排行榜、多人任务、比例与金额配置、公共/独立资金、手动划转、WebSocket实时虚拟成交、订单价格与时间对比、持仓结算及费用、盈亏统计和任务日表。
+首個公開發布的虛擬跟單版本，包含排行榜、多人任務、比例與金額設定、公共/獨立資金、手動劃轉、WebSocket即時虛擬成交、訂單價格與時間對比、持倉結算及費用、盈虧統計和任務日表。
 
-支持 Docker Compose 部署，自动生成并保存凭据、执行迁移和健康检查。补齐中英文项目与部署文档、MIT许可证和参与贡献说明。
+支援 Docker Compose 部署，自動生成並儲存憑據、執行遷移和健康檢查。補齊中英文專案與部署文件、MIT 授權條款和參與貢獻說明。
 
-修复总览每日盈亏表错误使用实时汇总的问题，改为读取每天北京时间10点生成的前一天固定日报。本版本不包含真钱交易功能。
+修復總覽每日盈虧表錯誤使用即時彙總的問題，改為讀取每天北京時間10點生成的前一天固定日報。本版本不包含真錢交易功能。

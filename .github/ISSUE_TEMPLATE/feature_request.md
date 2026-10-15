@@ -1,12 +1,12 @@
 ---
-name: Feature request / 功能建议
-about: Describe a use case and the desired result / 说明使用场景与目标
+name: Feature request / 功能建議
+about: Describe a use case and the desired result / 說明使用場景與目標
 title: "[Feature] "
 labels: enhancement
 ---
 
-### Use case / 使用场景
+### Use case / 使用場景
 
-### Desired behavior / 期望行为
+### Desired behavior / 期望行為
 
-### Alternatives considered / 已考虑的方案
+### Alternatives considered / 已考慮的方案

@@ -2,7 +2,7 @@
 
 **A self-hosted Polymarket copy trading simulator. Follow public traders, test position sizing, and keep an auditable paper ledger.**
 
-[中文说明](README.zh-CN.md) · [Deployment](docs/deployment.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+[繁體中文](README.zh-Hant.md) · [Deployment](docs/deployment.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
 
 [![Paper validation](https://github.com/sonnno/WhaleFollow/actions/workflows/paper-ci.yml/badge.svg)](https://github.com/sonnno/WhaleFollow/actions/workflows/paper-ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -11,7 +11,7 @@
 
 WhaleFollow helps answer a practical question: **what happens when I follow this trader with my own bankroll and sizing rules?** Browse public leaderboards, create multiple follow tasks, and inspect copied orders, positions, fees, and realized profit in one dashboard.
 
-This repository contains the **paper trading edition**. It does not place real orders and does not require a private key, seed phrase, trading API key, or wallet approval. The dashboard currently uses Simplified Chinese; project documentation is available in English and Chinese.
+This repository contains the **paper trading edition**. It does not place real orders and does not require a private key, seed phrase, trading API key, or wallet approval. The dashboard uses Chinese; project documentation is available in English and Traditional Chinese.
 
 ## Features
 
@@ -50,10 +50,10 @@ The default username is `admin`; the password is generated on first boot and ret
 
 Then:
 
-1. Open **排行榜** (Leaderboards), select a trader, or paste a public wallet address in **跟单任务** (Follow tasks).
+1. Open **排行榜** (Leaderboards), select a trader, or paste a public wallet address in **跟單任務** (Follow tasks).
 2. Choose shared or dedicated funds. For a dedicated account, enter an initial transfer amount.
 3. Set the copy percentage. **100% means the same source trade amount, not 100% of your wallet.**
-4. Choose **保存并开始跟单** (Save and start). Saving without starting leaves the task paused.
+4. Choose **儲存並開始跟單** (Save and start). Saving without starting leaves the task paused.
 5. Inspect the overview, order details and daily reports as new public trades arrive.
 
 ## Accounting you can inspect
