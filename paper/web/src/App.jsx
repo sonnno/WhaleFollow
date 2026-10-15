@@ -116,7 +116,7 @@ export default function App() {
         <p className="note">总盈亏包含已卖出及已结算的实际盈亏，已扣对应手续费。下面按最终结算记录统计，不计未结算浮盈。</p>
         <section><h2>已结算净盈亏历史</h2><Chart rows={cashStats.history} field="settledProfit"/></section>
         <section><h2>按人员统计 · 已结算</h2><Table rows={cashStats.leaders} columns={[["name","人员"],["count","结算记录数"],["profit","结算净盈亏",pnl]]}/></section>
-        <section><h2>每日已结算盈亏</h2><Table rows={cashStats.days} columns={[["day","日期"],["profit","结算净盈亏",pnl]]}/></section>
+        <section><h2>每日已结算盈亏</h2><p className="note">每天北京时间10点统计前一天，生成后金额固定；未生成的日期不显示。</p><Table rows={cashStats.days} columns={[["day","日期"],["profit","净盈亏",pnl]]}/></section>
       </>}
       {page === 'daily' && <DailyReports/>}
       {page === 'leaders' && <><p className="note">{settings?.config?.followWallets?.length ? '只跟选定人员，不随月榜名次变化切换跟单。' : '官方月度 PNL 包含持仓估值变化。离榜后停止跟买，已有虚拟仓位继续管理。'}</p><Table rows={listing.data} columns={[["rank", "月榜名次"], ["name", "人员"], ["id", "钱包", value => <code title={value}>{short(value)}</code>], ["pnl", "官方月度 PNL", pnl], ["active", "跟单状态", value => value ? <span className="positive">跟买中</span> : '仅管理已有仓位'], ["inventoryValid", "库存基线", value => value ? '已核对' : '待核对'], ["joinedAt", "本次加入", time]]}/></>}

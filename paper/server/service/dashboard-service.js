@@ -41,9 +41,8 @@ function create(db) {
         ) grouped ORDER BY "createdAt" DESC LIMIT 10000
       ) h),'[]'::jsonb) history,
       COALESCE((SELECT jsonb_agg(row_to_json(d) ORDER BY d.day DESC) FROM (
-        SELECT to_char("createdAt" AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD') AS "day",
-          COALESCE(SUM(profit) FILTER(WHERE profit>0),0)::text wins,COALESCE(-SUM(profit) FILTER(WHERE profit<0),0)::text losses,SUM(profit)::text profit
-        FROM settled GROUP BY "day"
+        SELECT day::text AS day,"netProfit"::text AS profit
+        FROM paper_daily_reports WHERE "breakdownVersion">=1
       ) d),'[]'::jsonb) days,
       COALESCE((SELECT jsonb_agg(row_to_json(l) ORDER BY l.profit::numeric DESC) FROM (
         SELECT wallet,name,COUNT(*)::int count,COALESCE(SUM(profit) FILTER(WHERE profit>0),0)::text wins,
