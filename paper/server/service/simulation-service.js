@@ -1,4 +1,5 @@
 const { D, str } = require('./accounting-service');
+const policy = require('./paper-execution-policy');
 
 function saleQuantity(own, sold, before) {
   if (D(before).lte(0)) throw new Error('Leader inventory unavailable');
@@ -6,10 +7,10 @@ function saleQuantity(own, sold, before) {
 }
 function buyAmount(signal, config) {
   const source = D(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount);
-  if (config.copySizing !== 'fixed_ratio') return source;
+  if (config.copySizing !== 'fixed_ratio') return config.realisticExecution ? policy.input(source) : source;
   const ratio = D(config.copyRatio);
   if (!ratio.isFinite() || ratio.lte(0)) throw new Error('Invalid copyRatio');
-  return source.mul(ratio);
+  return config.realisticExecution ? policy.input(source.mul(ratio)) : source.mul(ratio);
 }
 function execute(signal, book, metadata, config, target) {
   if (!metadata || metadata.rate === undefined || metadata.exponent === undefined || D(metadata.rate).lt(0)) throw new Error('Unknown fee parameters');
@@ -18,6 +19,12 @@ function execute(signal, book, metadata, config, target) {
   const reference = D(signal.price);
   if (reference.lte(0) || reference.gte(1)) throw new Error('Invalid source price');
   let remaining = buy ? buyAmount(signal, config) : D(target || 0);
+  if (config.realisticExecution && !buy) remaining = policy.input(remaining);
+  const empty = reason => ({ quantity: '0', gross: '0', fee: '0', cash: '0', fills: [], reason });
+  if (config.realisticExecution) {
+    const reason = policy.requestReason(signal, book, metadata, remaining);
+    if (reason) return empty(reason);
+  }
   if (!remaining.isFinite() || remaining.lte(0)) throw new Error('Invalid source amount or quantity');
   let availableCash = config.availableCash === undefined ? D(Infinity) : D(config.availableCash);
   let quantity = D(0), gross = D(0), fee = D(0);
@@ -32,7 +39,7 @@ function execute(signal, book, metadata, config, target) {
     const affordable = buy ? availableCash.div(p.plus(perShareFee)).clamp(0, Infinity) : wanted;
     if (buy && affordable.lt(wanted)) cashLimited = true;
     const size = buy ? wanted.clamp(0, affordable) : wanted;
-    const q = D(str(size));
+    const q = config.realisticExecution ? size.toDecimalPlaces(6, D(0).constructor.ROUND_DOWN) : D(str(size));
     if (q.lte(0)) continue;
     const f = D(str(q.mul(perShareFee))), g = q.mul(p);
     // A positive share quantity must not become a free fill when NUMERIC(38,18) stores its value.
@@ -43,7 +50,8 @@ function execute(signal, book, metadata, config, target) {
     fills.push({ price: str(p), quantity: str(q), fee: str(f) });
     if (remaining.lte('0.000000000000000001')) break;
   }
-  // Virtual allocations can be fractional; no real exchange order is submitted.
+  if (config.realisticExecution && cashLimited) return empty('INSUFFICIENT_CASH');
+  // FAK may partially match available depth, but never resize to available funds.
   if (quantity.isZero()) return { quantity: '0', gross: '0', fee: '0', cash: '0', fills: [], reason: cashLimited ? 'INSUFFICIENT_CASH' : 'NO_EXECUTABLE_DEPTH' };
   return { quantity: str(quantity), gross: str(gross), fee: str(fee), cash: str(buy ? gross.plus(fee) : gross.minus(fee)), fills, partial: remaining.gt('0.000001'), remaining: str(remaining) };
 }

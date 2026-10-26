@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web ./web
+COPY scripts/precompress-web.js ./scripts/precompress-web.js
 RUN npm run web:build
 
 FROM node:24-bookworm-slim AS runtime
@@ -17,6 +18,7 @@ COPY config/DBsettings.js config/index.js config/paper.example.json ./config/
 COPY scripts/db-init.js ./scripts/db-init.js
 COPY deploy/*.js ./deploy/
 COPY --from=build /app/web/dist ./web/dist
+RUN chmod -R a+rX /app/server /app/config /app/deploy /app/web /app/scripts /app/package.json
 USER node
 EXPOSE 3000
 CMD ["node", "deploy/run.js", "api"]

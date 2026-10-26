@@ -22,7 +22,7 @@ function screen() {
   const module = { exports: {} };
   vm.runInNewContext(source, {
     module, exports: module.exports,
-    require: function (name) {if(name==='./i18n')return i18n;if(name==='./LanguageSwitcher')return()=>null;
+    require: function (name) {if(name==='./i18n')return i18n;if(name==='./LanguageSwitcher'||name==='./WalletDeposit')return()=>null;
       if (name === 'react') return React;
       if ((name === './market-fields' || name === './market-fields-view')) return { marketFields: function () { return {}; } };
       if (name === './api') return { request: function (route, body, callback) { requests.push({ route, callback }); } };

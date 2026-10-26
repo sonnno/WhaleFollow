@@ -22,6 +22,7 @@ function read(tx, signal, callback) {
         SELECT
           EXISTS(SELECT 1 FROM retired WHERE (value->>'generation')::int >= $6) AS "taskDeleted",
           (SELECT to_jsonb(c)||jsonb_build_object('quantity',c.quantity::text,'gross',c.gross::text,'fee',c.fee::text) FROM claimed c) AS claimed,
+          (SELECT jsonb_build_object('delta',delta::text) FROM paper_cash_ledger WHERE id='trade:'||$1) AS "tradeLedger",
           (SELECT to_jsonb(p)||jsonb_build_object('quantity',p.quantity::text,'cost',p.cost::text,'realized',p.realized::text,'cycleRealized',p."cycleRealized"::text,'mark',p.mark::text) FROM paper_positions p WHERE id=$2||':'||$3) AS position,
           (SELECT jsonb_build_object('id',l.id,'name',l.name,'active',l.active,'joinedAt',l."joinedAt",'raw',jsonb_build_object('followGeneration',l.raw->'followGeneration')) FROM paper_leaders l WHERE id=$2) AS leader,
           (SELECT to_jsonb(t)||jsonb_build_object('cash',t.cash::text,'allocation',t.allocation::text,'fundedCapital',t."fundedCapital"::text,'realized',t.realized::text,'fees',t.fees::text,'copyPercent',t."copyPercent"::text,'maxOrderAmount',t."maxOrderAmount"::text) FROM paper_follow_tasks t WHERE id=$2) AS task,
@@ -60,14 +61,14 @@ function commit(tx, account, task, position, order, fill, callback) {
         fees=t.fees+(v->'fill'->>'fee')::numeric,realized=t.realized+(v->>'profit')::numeric,"updatedAt"=stamp.at
       FROM input,stamp,account_change WHERE t.id=v->'task'->>'id' RETURNING t.id
     ), position_change AS (
-      INSERT INTO paper_positions(id,wallet,token,condition,title,"outcomeIndex",quantity,cost,realized,"cycleRealized",cycle,"fundingMode","updatedAt")
+      INSERT INTO paper_positions(id,wallet,token,condition,title,"outcomeIndex",quantity,cost,realized,"cycleRealized",cycle,"fundingMode","openedAt","updatedAt")
       SELECT p->>'id',p->>'wallet',p->>'token',p->>'condition',COALESCE(p->>'title',''),(p->>'outcomeIndex')::int,
         (p->>'quantity')::numeric,(p->>'cost')::numeric,(p->>'realized')::numeric,(p->>'cycleRealized')::numeric,
-        (p->>'cycle')::int,COALESCE(p->>'fundingMode','shared'),stamp.at
+        (p->>'cycle')::int,COALESCE(p->>'fundingMode','shared'),(p->>'openedAt')::timestamptz,stamp.at
       FROM input,stamp,account_change,LATERAL (SELECT v->'position' AS p) value WHERE true
       ON CONFLICT(id) DO UPDATE SET quantity=EXCLUDED.quantity,cost=EXCLUDED.cost,realized=EXCLUDED.realized,
         "cycleRealized"=EXCLUDED."cycleRealized",cycle=EXCLUDED.cycle,"outcomeIndex"=EXCLUDED."outcomeIndex",
-        "fundingMode"=EXCLUDED."fundingMode",title=EXCLUDED.title,"updatedAt"=EXCLUDED."updatedAt" RETURNING id
+        "fundingMode"=EXCLUDED."fundingMode",title=EXCLUDED.title,"openedAt"=EXCLUDED."openedAt","updatedAt"=EXCLUDED."updatedAt" RETURNING id
     ), order_change AS (
       UPDATE paper_orders o SET status=v->'order'->>'status',reason=COALESCE(v->'order'->>'reason',''),
         quantity=(v->'order'->>'quantity')::numeric,gross=(v->'order'->>'gross')::numeric,fee=(v->'order'->>'fee')::numeric,

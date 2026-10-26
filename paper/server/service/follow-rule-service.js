@@ -1,5 +1,5 @@
 const { D, str } = require('./accounting-service');
-function executionConfig(task, base) { return { ...base, copySizing: 'fixed_ratio', copyRatio: str(D(task.copyPercent).div(100)) }; }
+function executionConfig(task, base) { return { ...base, realisticExecution: task.realisticExecution === true, copySizing: 'fixed_ratio', copyRatio: str(D(task.copyPercent).div(100)) }; }
 function availableCash(account, task, spent, sharedCash, positionCost) {
   const pool = task.fundingMode === 'shared' ? sharedCash === undefined ? account.cash : sharedCash : task.cash;
   let value = D(account.cash).clamp(0, D(pool).clamp(0, Infinity));
@@ -13,6 +13,7 @@ function buyBlocked(signal, task, job) {
   if (task.state !== 'running') return task.state === 'paused' ? 'TASK_PAUSED' : 'TASK_STOPPED';
   if (Number(signal.followGeneration || 0) !== task.generation) return 'TASK_GENERATION_CHANGED';
   if (signal.timestamp < Math.ceil(new Date(task.startedAt).getTime() / 1000)) return 'BEFORE_CURRENT_JOIN';
+  if (task.smartPause && !task.smartPause.events.includes(require('./smart-pause-service').signalEvent(signal))) return 'SMART_PAUSE_NEW_EVENT';
   return '';
 }
 module.exports = { executionConfig, availableCash, buyBlocked };

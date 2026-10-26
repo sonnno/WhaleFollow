@@ -2,8 +2,9 @@
 import { t, translateHumanMessage, getIntlLocale, useLanguage } from './i18n';
 import React, { useEffect, useRef, useState } from 'react';
 import { request } from './api';
+import { requestId } from './request-id';
 import { formatBalance as money } from './money-format';
-export function transferIntent(wallet,direction,amount,previous,generate=()=>crypto.randomUUID(),taskVersion='initial'){
+export function transferIntent(wallet,direction,amount,previous,generate=requestId,taskVersion='initial'){
  const payload={direction,amount:String(amount).trim(),taskVersion};
  if(!['in','out'].includes(direction)||!Number.isFinite(Number(payload.amount))||Number(payload.amount)<=0)throw new Error(t("请输入大于0的划转金额"));
  const fingerprint=JSON.stringify([wallet,direction,payload.amount,taskVersion]);

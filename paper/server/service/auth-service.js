@@ -2,18 +2,19 @@ const crypto = require('node:crypto');
 const session = require('express-session');
 const async = require('async');
 
-class DatabaseSessionStore extends session.Store {
-  constructor(db) { super(); this.db = db; }
+class RedisSessionStore extends session.Store {
+  constructor(redis) { super(); this.redis = redis; }
   get(id, callback) {
-    this.db.one('Setting', { where: { id: 'session:' + id } }, function (err, row) {
+    this.redis.get('paper:session:' + id, function (err, value) {
       if (err) return callback(err);
-      if (!row || Number(row.value.expires) < Date.now()) return callback(null, null);
-      callback(null, row.value.session);
+      if (!value) return callback(null, null);
+      let parsed; try { parsed = JSON.parse(value); } catch (error) { return callback(error); }
+      callback(null, parsed);
     });
   }
-  set(id, value, callback) { this.db.save('Setting', { id: 'session:' + id, value: { session: value, expires: Date.now() + 12 * 3600000 } }, function (err) { callback(err); }); }
-  destroy(id, callback) { this.db.query('DELETE FROM paper_settings WHERE id=$1', ['session:' + id], function (err) { callback(err); }); }
-  touch(id, value, callback) { this.set(id, value, callback); }
+  set(id, value, callback) { this.redis.set('paper:session:' + id, JSON.stringify(value), 'EX', 43200, function (err) { callback(err); }); }
+  destroy(id, callback) { this.redis.del('paper:session:' + id, function (err) { callback(err); }); }
+  touch(id, value, callback) { this.redis.expire('paper:session:' + id, 43200, function (err) { callback(err); }); }
 }
 
 function create() {
@@ -38,4 +39,4 @@ function create() {
   }
   return { login };
 }
-module.exports = { create, DatabaseSessionStore };
+module.exports = { create, RedisSessionStore };

@@ -4,25 +4,32 @@ const session = require('express-session');
 const path = require('node:path');
 require('../config');
 const db = require('./db/adapter').create();
+const homeDb = require('./db/adapter').create({ maxConnections: 2, statementTimeoutMs: 3000 });
 const controlRedis = require('./lib/redis')();
 const dashboard = require('./service/dashboard-service').create(db);
+const home = require('./service/home-cache-service').create(require('./service/home-query-service').create(homeDb), controlRedis);
 const marketStatistics=require('./service/market-statistics-service').create(db);
 const dailyReports = require('./service/daily-report-service').create(db);
 const admin = require('./service/admin-service').create(db);
 const leaderboardQuery = require('./service/leaderboard-query-service').create();
 const followTasks = require('./service/follow-task-service').create(db);
 const followTransfers = require('./service/follow-transfer-service').create(db);
+const walletDeposits = require('./service/wallet-deposit-service').create(db);
 const taskDeletion = require('./service/task-deletion-service').create(db);
 const taskOnboarding = require('./service/task-onboarding-service').create(db);
 const paper = require('./service/paper-service').create(db, null);
-const { DatabaseSessionStore } = require('./service/auth-service');
+const { RedisSessionStore } = require('./service/auth-service');
 const auth = require('./service/auth-service').create();
 const app = express();
+const webResponse = require('./service/web-response-service');
+const homePage = require('./service/home-page-service').create(home, require('node:fs').readFileSync(path.join(__dirname, '../web/dist/index.html'), 'utf8'));
 const refreshStreams = new Set();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '64kb' }));
 app.use(function (req, res, next) { res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Referrer-Policy', 'same-origin'); res.setHeader('X-Frame-Options', 'DENY'); if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store'); next(); });
-app.use(session({ name: 'paper.sid', secret: process.env.SESSION_SECRET || 'disabled-until-configured', resave: false, saveUninitialized: false, store: new DatabaseSessionStore(db), cookie: { httpOnly: true, sameSite: 'strict', secure: false, maxAge: 12 * 3600000 } }));
+app.use(webResponse.assets(path.join(__dirname, '../web/dist')));
+app.use(express.static(path.join(__dirname, '../web/dist'), { index: false }));
+app.use(session({ name: 'paper.sid', secret: process.env.SESSION_SECRET || 'disabled-until-configured', resave: false, saveUninitialized: false, store: new RedisSessionStore(controlRedis), cookie: { httpOnly: true, sameSite: 'strict', secure: false, maxAge: 12 * 3600000 } }));
 app.get('/healthz', function (req, res) { if (closing) return res.status(503).json({ ok: false }); db.query('SELECT 1', [], function (err) { res.status(err ? 503 : 200).json({ ok: !err }); }); });
 app.use('/api', function (req, res, next) {
   if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
@@ -42,6 +49,8 @@ app.post('/api/login', function (req, res) {
 app.get('/api/me', function (req, res) { if (!req.session.user) return res.status(401).json({ error: '请登录' }); res.json(req.session.user); });
 app.use('/api', function (req, res, next) { if (!req.session.user) return res.status(401).json({ error: '请登录' }); next(); });
 app.post('/api/logout', function (req, res) { req.session.destroy(reply(res)); });
+app.post('/api/wallet/deposits', function (req, res) { walletDeposits.deposit(req.body, function (err, result) { if (!err) home.refreshSummary(); controlReply(res)(err, result); }); });
+app.get('/api/wallet/deposits', function (req, res) { walletDeposits.list(req.query, reply(res)); });
 app.get('/api/leaderboards/catalog', function (req, res) { res.json(leaderboardQuery.catalog()); });
 app.get('/api/leaderboards', function (req, res) { leaderboardQuery.query(req.query, reply(res)); });
 app.get('/api/follow-tasks', function (req, res) { followTasks.list(reply(res)); });
@@ -52,7 +61,8 @@ app.post('/api/follow-tasks/:wallet/transfers', function (req, res) { followTran
 app.get('/api/follow-tasks/:wallet/transfers', function (req, res) { followTransfers.list(req.params.wallet, req.query, reply(res)); });
 app.post('/api/follow-tasks/:wallet/delete', function (req, res) { taskDeletion.remove(req.params.wallet, req.body, controlReply(res)); });
 app.get('/api/overview', function (req, res) { dashboard.overview(reply(res)); });
-app.get('/api/cash-summary', function (req, res) { dashboard.cashSummary(reply(res)); });
+app.get('/api/cash-summary', function (req, res) { home.summary(function (err, value) { webResponse.sendPrepared(res, err, value); }); });
+app.get('/api/home-history', function (req, res) { home.history(function (err, value) { webResponse.sendPrepared(res, err, value); }); });
 app.get('/api/bets', function (req, res) { dashboard.bets(req.query, reply(res)); });
 const collections = { leaders: 'leaders', 'copy-events': 'copies', 'paper-orders': 'copies', positions: 'positions', settlements: 'settlements', ledger: 'ledger', sources: 'sources' };
 Object.entries(collections).forEach(function ([route, kind]) { app.get('/api/' + route, function (req, res) { dashboard.list(kind, req.query, reply(res)); }); });
@@ -62,8 +72,8 @@ app.get('/api/market-statistics',function(req,res){marketStatistics.list(req.que
 app.get('/api/daily-reports', function (req, res) { dailyReports.list(req.query, reply(res)); });
 app.get('/api/daily-task-reports',function(req,res){dailyReports.listTasks(req.query,reply(res));});
 app.get('/api/daily-report-traders',function(req,res){dailyReports.traders(reply(res));});
-app.get('/api/settings', function (req, res) { admin.settings(reply(res)); });
-app.post('/api/settings', function (req, res) { admin.pause(req.body, controlReply(res)); });
+app.get('/api/settings', function (req, res) { home.settings(reply(res)); });
+app.post('/api/settings', function (req, res) { admin.pause(req.body, function (err, value) { if (!err) home.setRuntime(value.runtime); controlReply(res)(err, value); }); });
 app.get('/api/health', function (req, res) { admin.health(reply(res)); });
 app.get('/api/events', function (req, res) {
   if (!require('./service/http-lifecycle-service').registerRefreshStream(refreshStreams,res,closing)) return;
@@ -82,8 +92,7 @@ app.get('/api/export/:kind', function (req, res) {
     res.send('\uFEFF' + [keys.map(cell).join(','), ...result.data.map(function (row) { return keys.map(function (key) { return cell(row[key]); }).join(','); })].join('\r\n'));
   });
 });
-app.use(express.static(path.join(__dirname, '../web/dist')));
-app.get('/{*path}', function (req, res) { res.sendFile(path.join(__dirname, '../web/dist/index.html')); });
+app.get('/{*path}', homePage);
 app.use(function (err, req, res, next) { if (res.headersSent) return next(err); res.status(400).json({ error: err.message }); });
 let server, releaseApi, closing = false;
 async.waterfall([
@@ -91,12 +100,14 @@ async.waterfall([
   function (next) { db.apiLease(function () { process.exitCode = 1; shutdown(); }, function (err, release) { releaseApi = release; next(err); }); },
   function (next) { paper.initialize(function (err) { next(err); }); },
   function (next) { followTasks.initialize(function (err) { next(err); }); },
-  function (next) { controlRedis.connect(function () { next(); }); }
+  function (next) { controlRedis.connect(function (err) { next(err); }); },
+  function (next) { homeDb.connect(function (err) { next(err); }); },
+  function (next) { home.start(next); }
 ], function (err) {
   if (err) { console.error('API start failed:', err.message); process.exitCode = 1; shutdown(); return; }
   const listen = require('./lib/listen-options').listenOptions();
   server = app.listen(listen.port, listen.host, function () { console.log('Paper dashboard listening on ' + listen.host + ':' + listen.port); });
   server.on('error', function (error) { console.error(error.message); process.exitCode = 1; shutdown(); });
 });
-function shutdown() { if (closing) return; closing = true; function close() { controlRedis.disconnect(); if (releaseApi) { const release = releaseApi; releaseApi = null; release(function () { db.close(function () {}); }); } else db.close(function () {}); } require('./service/http-lifecycle-service').closeServer(server,refreshStreams,close); }
+function shutdown() { if (closing) return; closing = true; home.stop(); function close() { controlRedis.disconnect(); homeDb.close(function () {}); if (releaseApi) { const release = releaseApi; releaseApi = null; release(function () { db.close(function () {}); }); } else db.close(function () {}); } require('./service/http-lifecycle-service').closeServer(server,refreshStreams,close); }
 process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);

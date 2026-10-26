@@ -1,5 +1,25 @@
 # Changelog / 更新記錄
 
+## Unreleased — 2026-10-26
+
+### English
+
+- Lock each event's copy percentage at its first executed buy; later task changes apply to new events. Add smart pause for existing unsettled events and retain full buy pause.
+- Add virtual deposits to shared cash, realistic order minimum/precision checks and configurable single-game start horizons. Do not accumulate tiny requests, resize them to exchange minimums or backfill historical buys.
+- Add optional source-position-fraction selling with background inventory synchronization and an explicit ratio fallback when source data is unreliable. Preserve market minimums and actual residual shares. See [position-based sales](paper/docs/position-sales.md).
+- Continue the same current notification after a cold sports-policy lookup, and replace silent feeds through overlapping connections. Retain executed receipts for bookkeeping without buying again.
+- Improve dashboard query/index/cache performance, saved daily-profit breakdowns, settlement filters and profit colors. Add compatible request IDs, compressed web assets and stronger session/worker health handling.
+- Fix Docker build inclusion of the web compression script. Existing task ratios and wallet balances remain database settings, not repository defaults.
+
+### 繁體中文
+
+- 首次成交時鎖定該比賽的跟單比例，後續調整只套用於新比賽。新增智能暫停，保留已有未結算比賽的買入，並保留全部暫停功能。
+- 新增公共錢包虛擬充值、真實下單門檻及精度模擬、單場比賽開賽時間篩選。不累積小額請求、不強制放大至最低金額，也不補買歷史漏單。
+- 新增可選的原主持倉比例跟賣：背景同步持倉，資料不可靠時明確退回原有比例算法；保留最低份數限制與實際餘倉。詳見[按原主持倉比例跟賣](paper/docs/position-sales.md)。
+- 賽事政策快取缺失時，取得資料後繼續處理同一筆即時訊號；推送斷流以重疊連線替換。已成交回執只重寫帳務，不重複買入。
+- 改善首頁查詢、索引與快取、已儲存日盈虧拆分、結算篩選及盈虧顏色。補齊請求識別碼相容性、靜態檔案壓縮與工作程序健康檢查。
+- 修正Docker建置未包含網頁壓縮腳本的問題。現有任務比例與錢包餘額仍儲存在資料庫，不作為倉庫預設值。
+
 ## 1.1.0 — 2026-10-15
 
 The dashboard now supports Traditional Chinese and English. Flag and language-name buttons appear on the login screen and in System settings, switch immediately, and remember the choice in the current browser. Application labels, forms, reports, statuses and dates follow the selected language; trader names and official market titles retain their original text.

@@ -15,5 +15,6 @@
 !web/vite.config.js
 !scripts/
 !scripts/db-init.js
+!scripts/precompress-web.js
 !deploy/
 !deploy/*.js

@@ -34,7 +34,7 @@ function create(db, options) {
           if (!row) return next(invalid('任务不存在或已经删除', 404));
           task = row;
           if (task.generation !== input.generation) return next(invalid('任务状态已变化，请刷新列表后重新确认删除', 409));
-          if (!['paused', 'stopped'].includes(task.state)) return next(invalid('请先点击“暂停”，再删除任务', 409));
+          if (!['paused', 'stopped'].includes(task.state)) return next(invalid('请先点击“全部暂停”，再删除任务', 409));
           if (task.fundingMode === 'dedicated' && !D(task.cash).isZero()) return next(invalid('独立账户仍有现金，请先通过“转入 / 转出”全部转出，再删除任务', 409));
           tx.query(`/* delete-task-preflight */ SELECT
             (SELECT COUNT(*)::int FROM paper_positions WHERE wallet=$1 AND quantity>0) open,
@@ -72,7 +72,7 @@ function create(db, options) {
         function (next) { tx.query('SELECT id FROM paper_follow_fund_transfers WHERE wallet=$1',[wallet],next); },
         function(rows,next){async.eachSeries(rows,function(row,saved){const hash=crypto.createHash('sha256').update(row.id).digest('hex');tx.save('Setting',{id:'retired-transfer:'+hash,value:{retired:true}},function(err){saved(err);});},next);},
         function (next) {
-          const tables = ['paper_fills', 'paper_positions', 'paper_settlements', 'paper_closed_cycles', 'paper_follow_fund_transfers', 'paper_source_trades', 'paper_orders','paper_daily_task_reports'];
+          const tables = ['paper_fills', 'paper_positions', 'paper_settlements', 'paper_closed_cycles', 'paper_follow_fund_transfers', 'paper_source_trades', 'paper_orders','paper_daily_task_reports', 'paper_match_ratios', 'paper_copy_skip_stats'];
           async.eachSeries(tables, function (table, deleted) { tx.query('DELETE FROM ' + table + ' WHERE wallet=$1 RETURNING id', [wallet], function (err, rows) { if (!err) removed[table] = rows.length; deleted(err); }); }, next);
         },
         function (next) { tx.query(`DELETE FROM paper_outbox WHERE payload->>'wallet'=$1`, [wallet], function (err) { next(err); }); },

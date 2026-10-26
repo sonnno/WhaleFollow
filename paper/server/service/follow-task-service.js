@@ -20,7 +20,9 @@ function validate(value) {
   const wallet = publicWallet(value.wallet);
   if (typeof value.name !== 'string' || !value.name.trim() || value.name.trim().length > 200) throw invalid('名称必填，最多200个字符');
   if (value.fundingMode !== undefined && !['shared', 'dedicated'].includes(value.fundingMode)) throw invalid('资金模式必须为 shared 或 dedicated');
-  return { wallet, name: value.name.trim(), fundingMode: value.fundingMode, allocation: money(value.allocation, '个人投入额度', true), copyPercent: money(value.copyPercent, '跟单比例', false), maxOrderAmount: value.maxOrderAmount === null || value.maxOrderAmount === undefined || typeof value.maxOrderAmount === 'string' && !value.maxOrderAmount.trim() ? null : money(value.maxOrderAmount, '单笔含费上限', false) };
+  if (value.realisticExecution !== undefined && typeof value.realisticExecution !== 'boolean') throw invalid('真实下单模拟必须为开关');
+  if (value.shortSportsHours !== undefined && value.shortSportsHours !== null && (!Number.isInteger(value.shortSportsHours) || value.shortSportsHours < 1 || value.shortSportsHours > 720)) throw invalid('赛事时间筛选必须为1至720小时，或留空');
+  return { wallet, name: value.name.trim(), fundingMode: value.fundingMode, realisticExecution: value.realisticExecution, shortSportsHours: value.shortSportsHours, allocation: money(value.allocation, '个人投入额度', true), copyPercent: money(value.copyPercent, '跟单比例', false), maxOrderAmount: value.maxOrderAmount === null || value.maxOrderAmount === undefined || typeof value.maxOrderAmount === 'string' && !value.maxOrderAmount.trim() ? null : money(value.maxOrderAmount, '单笔含费上限', false) };
 }
 
 const legacySql = `/* follow-task-legacy */
@@ -32,15 +34,17 @@ const legacySql = `/* follow-task-legacy */
   FROM wallets w LEFT JOIN paper_leaders l ON l.id=w.id LEFT JOIN positions p ON p.wallet=w.id LEFT JOIN fees f ON f.wallet=w.id ORDER BY w.id`;
 
 const listSql = `WITH totals AS (SELECT COALESCE(SUM(cash),0) cash,COALESCE(SUM("fundedCapital"),0) allocation FROM paper_follow_tasks WHERE "fundingMode"='dedicated'),
-  positions AS (SELECT wallet,SUM(cost) cost,COUNT(*)::int count FROM paper_positions WHERE quantity>0 GROUP BY wallet),
+  positions AS (SELECT wallet,SUM(cost) cost,COUNT(*)::int count,MIN("openedAt") "oldestOpenAt" FROM paper_positions WHERE quantity>0 GROUP BY wallet),
   buys AS (SELECT wallet,COUNT(*)::int count FROM paper_orders WHERE side='BUY' AND gross>0 GROUP BY wallet),
   transfers AS (SELECT wallet,COALESCE(SUM(amount) FILTER(WHERE direction='in'),0) incoming,COALESCE(SUM(amount) FILTER(WHERE direction='out'),0) outgoing FROM paper_follow_fund_transfers GROUP BY wallet)
   SELECT json_build_object('wallet',json_build_object('initialCash',a."initialCash"::text,'cash',a.cash::text,'totalProfit',a.realized::text,
     'allocatedCapital',x.allocation::text,'dedicatedCash',x.cash::text,'unallocatedCash',(a.cash-x.cash)::text),
     'defaults',json_build_object('allocation',a."initialCash"::text,'fundingMode','shared','copyPercent','100','maxOrderAmount',NULL),
     'creationVersions',COALESCE((SELECT json_object_agg(SUBSTRING(id FROM 15),value->>'generation') FROM paper_settings WHERE id LIKE 'task-deletion:%'),'{}'::json),
-    'data',COALESCE((SELECT json_agg(json_build_object('id',t.id,'wallet',t.id,'name',COALESCE(l.name,t.id),'state',t.state,
+    'data',COALESCE((SELECT json_agg(json_build_object('id',t.id,'wallet',t.id,'name',COALESCE(l.name,t.id),'state',t.state,'smartPause',t."smartPause",
       'allocation',t.allocation::text,'fundingMode',t."fundingMode",'fundedCapital',t."fundedCapital"::text,'cash',t.cash::text,
+      'realisticExecution',t."realisticExecution",'shortSportsHours',t."shortSportsHours",'oldestOpenAt',p."oldestOpenAt",
+      'skipStats',COALESCE((SELECT json_object_agg(s.reason,json_build_object('count',s.count::text,'lastAt',s."lastAt",'sample',s.sample)) FROM paper_copy_skip_stats s WHERE s.wallet=t.id AND s."taskCreatedAt"=date_trunc('milliseconds',t."createdAt")),'{}'::json),
       'availableCash',(CASE WHEN t."fundingMode"='shared' THEN LEAST(GREATEST(a.cash-x.cash,0),GREATEST(t.allocation-COALESCE(p.cost,0),0)) ELSE LEAST(t.cash,GREATEST(t.allocation-COALESCE(p.cost,0),0)) END)::text,
       'unusedCash',(CASE WHEN t."fundingMode"='dedicated' THEN GREATEST(t.cash-GREATEST(t.allocation-COALESCE(p.cost,0),0),0) ELSE 0 END)::text,
       'realized',t.realized::text,'fees',t.fees::text,'totalProfit',t.realized::text,
@@ -131,6 +135,8 @@ function create(db) {
           const funded = mode === 'dedicated' && oldMode === 'dedicated' && task ? D(task.fundedCapital) : D(0);
           available = D(account.cash).minus(reserved.minus(oldCash).plus(cash));
           task = { ...(task || { id: input.wallet, state: 'paused', realized: '0', fees: '0', generation: newGeneration, startedAt: new Date() }), allocation: input.allocation, fundingMode: mode, fundedCapital: str(funded), cash: str(cash), copyPercent: input.copyPercent, maxOrderAmount: input.maxOrderAmount };
+          task.realisticExecution = input.realisticExecution === undefined ? task.realisticExecution ?? true : input.realisticExecution;
+          task.shortSportsHours = input.shortSportsHours === undefined ? task.shortSportsHours ?? null : input.shortSportsHours;
           if (modeChanged) task.generation += 1;
           leader = { ...(leader || { id: input.wallet, rank: 0, pnl: '0', joinedAt: new Date(), inventory: {}, inventoryValid: false, raw: {} }), name: input.name, active: task.state === 'running', raw: { ...(leader && leader.raw || {}), followGeneration: task.generation, followFundingMode: task.fundingMode } };
           if (modeChanged) return tx.query('SELECT clock_timestamp() AS at', [], next);
@@ -147,18 +153,25 @@ function create(db) {
   }
   function control(value, options, callback) {
     let wallet, action;
-    try { wallet = publicWallet(value); action = options && options.action; if (!['start', 'pause', 'stop'].includes(action)) throw invalid('任务操作必须为 start、pause 或 stop'); } catch (err) { return callback(err); }
+    try { wallet = publicWallet(value); action = options && options.action; if (!['start', 'pause', 'stop', 'smart_pause'].includes(action)) throw invalid('任务操作必须为 start、pause、stop 或 smart_pause'); } catch (err) { return callback(err); }
     db.transaction(function (tx, done) {
       let task, leader;
       async.waterfall([
         function (next) { lock(tx, function (err) { next(err); }); },
         function (next) { tx.one('FollowTask', { where: { id: wallet } }, next); },
-        function (row, next) { if (!row) return next(invalid('跟单任务不存在', 404));if(action==='start'&&row.state==='running')return next(invalid('该地址已有正在跟单的任务，请勿重复开始。',409)); task = row; tx.one('Leader', { where: { id: wallet } }, next); },
+        function (row, next) { if (!row) return next(invalid('跟单任务不存在', 404));if(action==='start'&&row.state==='running'&&!row.smartPause)return next(invalid('该地址已有正在跟单的任务，请勿重复开始。',409)); task = row; tx.one('Leader', { where: { id: wallet } }, next); },
         function (row, next) { if (!row) return next(invalid('任务人员记录缺失，请人工核对', 409)); leader = row; tx.query('SELECT clock_timestamp() AS at', [], next); },
         function (rows, next) {
-          task.state = { start: 'running', pause: 'paused', stop: 'stopped' }[action]; task.generation += 1;
+          const at = rows[0].at;
+          if (action === 'smart_pause') {
+            if (task.smartPause) return done(null,{...task,wallet,name:leader.name});
+            return require('./smart-pause-service').freeze(tx,wallet,at,function(err,pause){if(err)return next(err);task.smartPause=pause;task.state='running';leader.active=true;tx.save('FollowTask',task,function(error){next(error);});});
+          }
+          const leaveSmart = action === 'start' && !!task.smartPause;
+          task.smartPause = null;
+          task.state = { start: 'running', pause: 'paused', stop: 'stopped' }[action]; if (!leaveSmart) task.generation += 1;
           leader.active = action === 'start'; leader.raw = { ...(leader.raw || {}), followGeneration: task.generation, followFundingMode: task.fundingMode || 'shared' };
-          if (action === 'start') boundary(task, leader, rows[0].at);
+          if (action === 'start' && !leaveSmart) boundary(task, leader, at);
           tx.save('FollowTask', task, function (err) { next(err); });
         },
         function (next) { tx.save('Leader', leader, function (err) { next(err); }); },

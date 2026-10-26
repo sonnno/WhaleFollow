@@ -19,6 +19,7 @@ function fixture(options) {
         state.queries.push(sql);
         if (/paper_accounts.*FOR UPDATE/.test(sql)) { locked = true; return cb(null, [structuredClone(state.Account.paper)]); }
         if (/^SELECT clock_timestamp\(\)/.test(sql)) return cb(null, [{ at: new Date('2026-10-13T00:00:00Z') }]);
+        if (sql.includes('smart-pause-events')) return cb(null, structuredClone(state.smartEvents || []));
         if (/SUM\(cash\)/.test(sql)) return cb(null, [{ cash: String(Object.values(state.FollowTask).reduce(function (sum, row) { return sum + (row.fundingMode === 'dedicated' ? Number(row.cash) : 0); }, 0)) }]);
         if (/COUNT\(\*\).*paper_positions/.test(sql)) { const positions = state.positions.filter(function (p) { return p.wallet === params[0] && Number(p.quantity) > 0; }); return cb(null, [{ count: positions.length, cost: String(positions.reduce(function (sum, row) { return sum + Number(row.cost || 0); }, 0)) }]); }
         if (/follow-task-legacy/.test(sql)) return cb(null, structuredClone(state.legacy));
@@ -37,6 +38,15 @@ function fixture(options) {
 }
 function service(f) { return require(file).create(f.db); }
 function input(extra) { return { wallet, name: 'Outside leaderboard', allocation: '600', copyPercent: '100', maxOrderAmount: '', ...extra }; }
+
+test('task saves realistic simulation and short-game hours and rejects malformed filters', function (_, done) {
+  const f = fixture();
+  service(f).save(input({ realisticExecution: true, shortSportsHours: 72 }), function (err, row) {
+    assert.ifError(err); assert.equal(row.realisticExecution, true); assert.equal(row.shortSportsHours, 72);
+    assert.throws(() => require(file).validate(input({ shortSportsHours: -1 })), /筛选/);
+    assert.throws(() => require(file).validate(input({ realisticExecution: 'yes' })), /模拟/); done();
+  });
+});
 
 test('start retires old WS barriers and inventory pending flags while pause preserves them',function(_,done){
  const f=fixture({FollowTask:{[wallet]:{id:wallet,state:'running',generation:1,fundingMode:'shared'}},Leader:{[wallet]:{id:wallet,raw:{followGeneration:1},inventory:{},inventoryValid:true}},outbox:[{id:'barrier',kind:'source-confirmation',status:'pending',payload:{wallet,side:'SELL'}}],sources:[{wallet,raw:{wsPending:true,wsPendingInventory:true,wsSellPending:true}}]});
@@ -139,3 +149,13 @@ test('recreating a deleted wallet advances beyond its retired generation',functi
 test('explicit create rejects an existing normalized wallet without changing its configuration',(_,done)=>{const f=fixture(),s=service(f);s.save(input({operation:'create'}),(err,row)=>{assert.ifError(err);const before=structuredClone(f.state);s.save(input({operation:'create',wallet:wallet.toUpperCase().replace('0X','0x'),copyPercent:'200'}),err=>{assert.equal(err.status,409);assert.match(err.message,/已有跟单任务/);assert.deepEqual(f.state.FollowTask,before.FollowTask);assert.deepEqual(f.state.Leader,before.Leader);done();});});});
 test('concurrent create requests for the same wallet allow only one success',(_,done)=>{const f=fixture(),s=service(f);async.parallel([1,2].map(n=>cb=>s.save(input({operation:'create',copyPercent:String(n)}),(err,row)=>cb(null,{err,row}))),(_,results)=>{assert.equal(results.filter(r=>!r.err).length,1);assert.equal(results.find(r=>r.err).err.status,409);assert.equal(Object.keys(f.state.FollowTask).length,1);done();});});
 test('starting an already running wallet rejects without changing generation, inventory or waiting buys',(_,done)=>{const f=fixture({FollowTask:{[wallet]:{id:wallet,state:'paused',generation:1,cash:'0',allocation:'1000'}},Leader:{[wallet]:{id:wallet,name:'A',active:false,inventory:{},raw:{}}}}),s=service(f);s.control(wallet,{action:'start'},err=>{assert.ifError(err);f.state.Leader[wallet].inventory={token:'99'};f.state.orders.push({wallet,side:'BUY',status:'WAITING'});const before=structuredClone(f.state);s.control(wallet.toUpperCase().replace('0X','0x'),{action:'start'},err=>{assert.equal(err.status,409);assert.match(err.message,/正在跟单/);assert.deepEqual(f.state.FollowTask,before.FollowTask);assert.deepEqual(f.state.Leader,before.Leader);assert.deepEqual(f.state.orders,before.orders);done();});});});
+
+test('smart pause persists a frozen event list, keeps generation, is idempotent and Start clears it',function(_,done){
+ const f=fixture({FollowTask:{[wallet]:{id:wallet,state:'running',generation:3,fundingMode:'shared',startedAt:new Date(0)}},Leader:{[wallet]:{id:wallet,active:true,raw:{}}},smartEvents:[{condition:'winner',eventSlug:'game-a'},{condition:'total',eventSlug:'game-a-more-markets'}]});const s=service(f);
+ s.control(wallet,{action:'smart_pause'},function(err,row){assert.ifError(err);assert.equal(row.state,'running');assert.equal(row.generation,3);assert.deepEqual(row.smartPause.events,['game-a']);assert.equal(f.state.Leader[wallet].active,true);const id=row.smartPause.id;
+  f.state.smartEvents=[{eventSlug:'game-b'}];s.control(wallet,{action:'smart_pause'},function(error,again){assert.ifError(error);assert.equal(again.smartPause.id,id);assert.deepEqual(again.smartPause.events,['game-a']);
+   s.control(wallet,{action:'start'},function(issue,started){assert.ifError(issue);assert.equal(started.smartPause,null);assert.equal(started.generation,3);assert.equal(new Date(started.startedAt).getTime(),0);assert.equal(started.state,'running');done();});
+  });
+ });
+});
+test('unknown active event identity rejects smart pause atomically; full pause remains available',function(_,done){const f=fixture({FollowTask:{[wallet]:{id:wallet,state:'running',generation:3}},Leader:{[wallet]:{id:wallet,active:true,raw:{}}},smartEvents:[{condition:'unknown',eventSlug:null}]});const s=service(f);s.control(wallet,{action:'smart_pause'},function(err){assert.equal(err.status,409);assert.equal(f.state.FollowTask[wallet].smartPause,undefined);assert.equal(f.state.Leader[wallet].active,true);s.control(wallet,{action:'pause'},function(error,row){assert.ifError(error);assert.equal(row.state,'paused');assert.equal(row.smartPause,null);done();});});});

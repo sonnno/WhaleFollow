@@ -59,7 +59,13 @@ function create(options) {
   migrations.push(require('./migrations/manual-transfers'));
   migrations.push(require('./migrations/daily-task-reports'));
   migrations.push(require('./migrations/execution-indexes'));
-  const source = new DataSource({ type: 'postgres', host: settings.POSTGRES_HOST, port: settings.POSTGRES_PORT, username: settings.POSTGRES_USER, password: settings.POSTGRES_PASSWORD, database: options.database || settings.POSTGRES_DATABASE, entities, migrations, migrationsTableName: 'paper_migrations', synchronize: false, logging: false, extra: { connectionTimeoutMillis: 5000, max: 10, options: '-c max_parallel_workers_per_gather=0' } });
+  migrations.push(require('./migrations/dashboard-indexes'));
+  migrations.push(require('./migrations/background-indexes'));
+  migrations.push(require('./migrations/match-ratios'));
+  migrations.push(require('./migrations/wallet-deposits'));
+  migrations.push(require('./migrations/smart-pause'));
+  migrations.push(require('./migrations/short-sports'));
+  const source = new DataSource({ type: 'postgres', host: settings.POSTGRES_HOST, port: settings.POSTGRES_PORT, username: settings.POSTGRES_USER, password: settings.POSTGRES_PASSWORD, database: options.database || settings.POSTGRES_DATABASE, entities, migrations, migrationsTableName: 'paper_migrations', synchronize: false, logging: false, extra: { connectionTimeoutMillis: 5000, max: options.maxConnections || 10, options: '-c max_parallel_workers_per_gather=0 -c jit=off' + (options.statementTimeoutMs ? ' -c statement_timeout=' + Number(options.statementTimeoutMs) : '') } });
   function acquireLease(key, onLost, callback) {
       const runner = source.createQueryRunner();
       async.waterfall([
@@ -76,9 +82,10 @@ function create(options) {
     connect: function (callback) { invoke(function () { return source.initialize(); }, callback); },
     close: function (callback) { if (!source.isInitialized) return callback(); invoke(function () { return source.destroy(); }, callback); },
     migrate: function (callback) {
-      invoke(function () { return source.query("DO $$ BEGIN IF to_regclass('public.live_system_identity') IS NOT NULL OR to_regclass('public.live_migrations') IS NOT NULL OR to_regclass('public.live_intents') IS NOT NULL THEN RAISE EXCEPTION 'Paper cannot migrate a live-owned database'; END IF; IF to_regclass('public.migrations') IS NOT NULL AND to_regclass('public.paper_migrations') IS NOT NULL THEN RAISE EXCEPTION 'Ambiguous migration histories'; END IF; IF to_regclass('public.migrations') IS NOT NULL THEN ALTER TABLE migrations RENAME TO paper_migrations; END IF; END $$"); }, function (err) { if (err) return callback(err); invoke(function () { return source.runMigrations(); }, callback); });
+      invoke(function () { return source.query("DO $$ BEGIN IF to_regclass('public.live_system_identity') IS NOT NULL OR to_regclass('public.live_migrations') IS NOT NULL OR to_regclass('public.live_intents') IS NOT NULL THEN RAISE EXCEPTION 'Paper cannot migrate a live-owned database'; END IF; IF to_regclass('public.migrations') IS NOT NULL AND to_regclass('public.paper_migrations') IS NOT NULL THEN RAISE EXCEPTION 'Ambiguous migration histories'; END IF; IF to_regclass('public.migrations') IS NOT NULL THEN ALTER TABLE migrations RENAME TO paper_migrations; END IF; END $$"); }, function (err) { if (err) return callback(err); invoke(function () { return source.runMigrations({ transaction: 'each' }); }, callback); });
     },
     transaction: function (work, callback) { runTransaction(source.createQueryRunner(), work, callback); },
+    readSnapshot: function (work, callback) { runTransaction(source.createQueryRunner(), function (tx, done) { tx.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY', [], function (err) { if (err) return done(err); work(tx, done); }); }, callback); },
     lease: function(onLost, callback) { acquireLease(options.leaseKey || 178002, onLost, callback); },
     apiLease: function(onLost, callback) { acquireLease(178004, onLost, callback); }
   };

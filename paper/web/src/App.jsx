@@ -8,6 +8,7 @@ import FollowTasks from './FollowTasks';
 import DailyReports from './DailyReports';
 import MarketStatistics from './MarketStatistics';
 import LanguageSwitcher from './LanguageSwitcher';
+import WalletDeposit from './WalletDeposit';
 import {marketFields} from './market-fields-view';
 
 const pages = [['overview', '总览'], ['leaderboards', '排行榜'], ['follow-tasks', '跟单任务'], ['copies', '跟单明细'], ['positions', '持仓'], ['settlements', '结算记录'], ['analytics', '盈亏统计'], ['daily', '日表'], ['system', '系统设置']];
@@ -17,6 +18,7 @@ const short = value => value && value.length > 18 ? value.slice(0, 8) + '…' + 
 const pnl = value => <span className={Number(value) > 0 ? 'positive' : Number(value) < 0 ? 'negative' : ''}>{t(Number(value) > 0 ? '+' : '')}{t(money(value))}</span>;
 const status = { FILLED: '已成交', PARTIAL: '部分成交', SKIPPED: '已跳过', WAITING: '等待跟单', BUY: '买入', SELL: '卖出' };
 const taskNames = { inventory: '持仓核对', trades: '成交查询', 'activity-trigger': '成交通知核对', activity: '交易通知', leaderboard: '榜单刷新', settlement: '结算核对', copy: '模拟跟单', 'daily-report': '每日盈亏日表' };
+const bootstrap = typeof window === 'undefined' ? undefined : window.__WHALE_BOOTSTRAP__;
 const marketCell = (value, row) => <div className="bet-market" title={value || row.details?.signal?.title}>{marketFields({...row,title:value||row.title||row.details?.signal?.title}).event}</div>;
 const originalAmountColumn=['sourceAmount','原主成交金额 · 不含费',value=>value==null?t("暂未取得"):money(value)];
 const ownAmountColumn=['gross','我们成交金额 · 不含费',(value,row)=>row.copyTime?<span>{t(money(value))}<small className="cell-note">{t(row.side==='SELL'?t("扣费到账"):t("含费支出"))} {t(money(row.amount))}</small></span>:t("尚未成交")];
@@ -26,6 +28,13 @@ const sourceTimeColumn=['sourceTime','原主成交时间 · 北京时间',execut
 const copyTimeColumn=['copyTime','我们成交时间 · 北京时间',(value,row)=>value?row.copyClock==='legacy-database'?t("暂无准确时间"):executionTime(value):t("尚未成交")];
 const delayColumn=['executionDelay','成交时间差',(_,row)=>row.copyTime?comparisonDelay(row):t("尚未成交")];
 const directionColumn=['outcome','买入 / 卖出方向',(value,row)=>marketFields(row).direction];
+const settlementColumn=['settlementStatus','结算状态',value=>value?<span className="tag">{t({settled:'已结算',pending:'未结算',sold:'已卖出'}[value]||'—')}</span>:'—'];
+export function settlementRowClass(row) {
+  const settled = row.settlementStatus === undefined ? row.profit != null : row.settlementStatus === 'settled';
+  const value = settled ? row.settlementProfit ?? row.profit : null;
+  const profit = value == null ? 0 : Number(value);
+  return 'trade-result ' + (Number.isFinite(profit) && profit > 0 ? 'trade-profit' : Number.isFinite(profit) && profit < 0 ? 'trade-loss' : 'trade-neutral');
+}
 const marketInfoColumn = ['category', '类型 / 玩法 / 盘口 / 官网', (value, row) => {const fields=marketFields(row);return <div className="market-info"><strong>{t(value || t("分类待更新"))}</strong><span>{t("玩法：")}{t(fields.play)}</span><span>{t("盘口：")}{t(fields.line)}</span>{fields.subject&&<span>{t("投注对象：")}{fields.subject}</span>}{row.officialUrl ? <a className="official-link" href={row.officialUrl} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}>{t("查看官网 ↗")}</a> : <span className="cell-note">{t("官网链接待更新")}</span>}</div>; }];
 
 function WorkerNotice({ worker }) {
@@ -43,8 +52,8 @@ function Chart({ rows = [], field = 'equity' }) {
   const points = values.map((value, index) => `${48 + index / (values.length - 1) * 824},${188 - (value - min) / range * 152}`).join(' ');
   return <div className="chart"><svg viewBox="0 0 900 235" role="img" aria-label={t("已结算净盈亏曲线")}><line x1="48" x2="872" y1="188" y2="188" className="grid-line"/><line x1="48" x2="872" y1="112" y2="112" className="grid-line"/><polyline points={points} fill="none" stroke="currentColor" strokeWidth="2.5"/><text x="48" y="22">{t(money(max))} USDT</text><text x="48" y="220">{t(time(rows[0].createdAt))}</text><text x="872" y="220" textAnchor="end">{t(time(rows[rows.length - 1].createdAt))}</text></svg></div>;
 }
-export function Table({ columns, rows = [], onRow, emptyText = t("暂无记录。Worker 采集到新的有效信号后，记录将显示在这里。") }) {
-  return <div className="table-scroll"><table><thead><tr>{columns.map(([key, label]) => <th key={key}>{t(label)}</th>)}</tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.id || index} onClick={() => onRow && onRow(row)} className={onRow ? 'clickable' : ''}>{columns.map(([key, , render]) => <td key={key}>{render ? render(row[key], row) : (["category","marketType","outcome","status","state","fundingMode","label"].includes(key) ? t(String(row[key] ?? '—')) : String(row[key] ?? '—'))}</td>)}</tr>) : <tr><td colSpan={columns.length} className="empty">{t(emptyText)}</td></tr>}</tbody></table></div>;
+export function Table({ columns, rows = [], onRow, rowClassName, emptyText = t("暂无记录。Worker 采集到新的有效信号后，记录将显示在这里。") }) {
+  return <div className="table-scroll"><table><thead><tr>{columns.map(([key, label]) => <th key={key}>{t(label)}</th>)}</tr></thead><tbody>{rows.length ? rows.map((row, index) => <tr key={row.id || index} onClick={() => onRow && onRow(row)} className={[onRow ? 'clickable' : '', rowClassName ? rowClassName(row) : ''].filter(Boolean).join(' ')}>{columns.map(([key, , render]) => <td key={key}>{render ? render(row[key], row) : (["category","marketType","outcome","status","state","fundingMode","label"].includes(key) ? t(String(row[key] ?? '—')) : String(row[key] ?? '—'))}</td>)}</tr>) : <tr><td colSpan={columns.length} className="empty">{t(emptyText)}</td></tr>}</tbody></table></div>;
 }
 export function Login({ onLogin }) {
   useLanguage();
@@ -55,23 +64,30 @@ export function Login({ onLogin }) {
   }
   return <main className="login"><div className="login-language"><LanguageSwitcher /></div><form onSubmit={submit}><span className="eyebrow">POLYMARKET · PAPER TRADING</span><h1>{t("虚拟跟单后台")}</h1><p>{t("查看下注记录与已结算盈亏")}</p><label>{t("用户名")}<input name="username" defaultValue="admin" autoComplete="username" required/></label><label>{t("密码")}<input name="password" type="password" autoComplete="current-password" required/></label>{error && <div className="error" role="alert">{translateHumanMessage(error)}</div>}<button disabled={busy}>{t(busy ? t("登录中…") : t("登录后台"))}</button><small>{t("本地管理员凭证保存在项目 .env 文件中")}</small></form></main>;
 }
+function listingFilter(filter, page) {
+  const values = { ...filter, ...(page === 'positions' ? { open: 'true' } : {}) };
+  if (page !== 'copies') delete values.settlementStatus;
+  ['from', 'to'].forEach(key => { if (values[key]) values[key] = new Date(values[key]).toISOString(); });
+  return values;
+}
 export default function App() {
   useLanguage();
-  const [user, setUser] = useState(undefined), [page, setPage] = useState('overview'), [data, setData] = useState({}), [error, setError] = useState(''), [detail, setDetail] = useState(null), [filter, setFilter] = useState({ wallet: '', condition: '', status: '', from: '', to: '' }), [offset, setOffset] = useState(0);
+  const [user, setUser] = useState(bootstrap ? bootstrap.user : undefined), [page, setPage] = useState('overview'), [data, setData] = useState(bootstrap?.data || {}), [error, setError] = useState(''), [detail, setDetail] = useState(null), [filter, setFilter] = useState({ wallet: '', condition: '', status: '', settlementStatus: '', from: '', to: '' }), [offset, setOffset] = useState(0);
   const [pauseBusy, setPauseBusy] = useState(false);
+  const [depositOpen,setDepositOpen]=useState(false);
   const [followSelection, setFollowSelection] = useState(null);
   const [refreshVersion,setRefreshVersion]=useState(0);
   const requestVersion = useRef(0);
   const pendingRequests = useRef(new Set()), routeErrors = useRef(new Map());
-  useEffect(() => { request('/me', null, (err, value) => setUser(err ? null : value)); }, []);
+  useEffect(() => { if (!bootstrap) request('/me', null, (err, value) => setUser(err ? null : value)); }, []);
   const load = useCallback(() => {
     if (!user) return;
     const version = requestVersion.current;
-    const routes = ['leaderboards', 'follow-tasks','daily','analytics'].includes(page) ? [] : page === 'overview' ? ['/cash-summary'] : page === 'system' ? ['/settings', '/health'] : [page === 'copies' ? '/paper-orders' : '/' + page];
+    const routes = ['leaderboards', 'follow-tasks','daily','analytics'].includes(page) ? [] : page === 'overview' ? ['/cash-summary', '/home-history'] : page === 'system' ? ['/settings', '/health'] : [page === 'copies' ? '/paper-orders' : '/' + page];
     if (['copies', 'positions', 'settlements'].includes(page)) routes.push('/leaders');
     if (!routes.includes('/settings')) routes.push('/settings');
     routes.forEach(route => {
-      const query = route === '/leaders' ? '?limit=500' : ['copies', 'positions', 'settlements'].includes(page) ? '?' + new URLSearchParams({ ...filter, ...(page === 'positions' ? { open: 'true' } : {}), limit: 100, offset }) : '';
+      const query = route === '/leaders' ? '?limit=500' : ['copies', 'positions', 'settlements'].includes(page) ? '?' + new URLSearchParams({ ...listingFilter(filter, page), limit: 100, offset }) : '';
       if (pendingRequests.current.has(route)) return;
       pendingRequests.current.add(route);
       request(route + query, null, (err, value) => {
@@ -88,14 +104,12 @@ export default function App() {
     pendingRequests.current.clear(); routeErrors.current.clear(); setError('');
     load();
     if (!user) return;
-    const stream = new EventSource('/api/events');
-    stream.addEventListener('refresh', load);
-    const interval = setInterval(load, 10000);
-    return () => { requestVersion.current += 1; stream.close(); clearInterval(interval); pendingRequests.current.clear(); };
+    const interval = setInterval(load, 5000);
+    return () => { requestVersion.current += 1; clearInterval(interval); pendingRequests.current.clear(); };
   }, [load, user]);
   if (user === undefined) return <main className="loading">{t("正在连接后台…")}</main>;
   if (!user) return <Login onLogin={setUser}/>;
-  const cashStats = data['/cash-summary'], settings = data['/settings'], health = data['/health'];
+  const cashStats = data['/cash-summary'], homeHistory = data['/home-history'], settings = data['/settings'], health = data['/health'];
   const route = page === 'copies' ? '/paper-orders' : page === 'daily' ? '/daily-reports' : '/' + page;
   const listing = data[route] || { data: [] };
   const traders = data['/leaders']?.data || [];
@@ -107,36 +121,40 @@ export default function App() {
       {page === 'leaderboards' && <Leaderboards onFollow={row => { setFollowSelection(row); setPage('follow-tasks'); setDetail(null); }}/>}
       {page === 'follow-tasks' && <FollowTasks selection={followSelection} onSelectionConsumed={() => setFollowSelection(null)} onOrders={wallet => { setFilter(prior => ({ ...prior, wallet })); setOffset(0); setPage('copies'); }}/>}
       {page === 'overview' && cashStats && <>
+        <p className="note">{t("余额更新时间：")}{time(cashStats.updatedAt)}{cashStats.stale && <span className="negative"> · {t("后台更新暂缓，当前显示上次成功结果")}</span>}</p>
         <div className="overview-metrics">
           <div><span>{t("剩余现金 · USDT")}</span><strong>{t(money(cashStats.cash))}</strong></div>
           <div><span>{t("总盈亏 · USDT")}</span><strong>{t(pnl(cashStats.totalProfit))}</strong><small>{t("已结算及已卖出，不含未结算浮盈")}</small></div>
           <div><span>{t("未结算笔数")}</span><strong>{t(cashStats.pendingBets)}<em>{t("笔")}</em></strong></div>
           <div><span>{t("未结算投入 · USDT")}</span><strong>{t(money(cashStats.pendingCost))}</strong><small>{t("剩余持仓的实际成本，含费用")}</small></div>
         </div>
-        <section className="wallet-balances"><h2>{t("钱包余额与预警")}</h2>
+        <section className="wallet-balances"><div className="section-title"><h2>{t("钱包余额与预警")}</h2><button type="button" onClick={()=>setDepositOpen(true)}>{t("虚拟充值")}</button></div>
           {(cashStats.walletBalances || []).some(row => row.warning?.insufficient === true) && <p className="wallet-balance-alert" role="alert">{cashStats.walletBalances.filter(row => row.warning?.insufficient === true).map((row,index)=><React.Fragment key={row.id}>{index ? ", " : ""}{walletName(row)}</React.Fragment>)}{t("：下单余额不足。")}</p>}
           <Table rows={cashStats.walletBalances || []} columns={[["name",t("账户"),(value,row)=>walletName(row)],["cash",t("可用现金 · USDT"),money],["warning",t("余额预警"),value => value?.insufficient === true ? <span className="negative">{t("下单余额不足")}</span> : <span className="note">{t("未触发预警")}</span>]]}/>
           <p className="note">{t("预警由下单时余额不足触发；该账户下单成功后解除。余额不足的尝试不生成订单。")}</p>
         </section>
         <p className="note">{t("总盈亏包含已卖出及已结算的实际盈亏，已扣对应手续费。下面按最终结算记录统计，不计未结算浮盈。")}</p>
-        <section><h2>{t("已结算净盈亏历史")}</h2><Chart rows={cashStats.history} field="settledProfit"/></section>
-        <section><h2>{t("按人员统计 · 已结算")}</h2><Table rows={cashStats.leaders} columns={[["name",t("人员")],["count",t("结算记录数")],["profit",t("结算净盈亏"),pnl]]}/></section>
-        <section><h2>{t("每日已结算盈亏")}</h2><p className="note">{t("每天北京时间10点统计前一天，生成后金额固定；未生成的日期不显示。")}</p><Table rows={cashStats.days} columns={[["day",t("日期")],["profit",t("净盈亏"),pnl]]}/></section>
+        {homeHistory ? <>
+          <p className="note">{t("历史统计更新时间：")}{time(homeHistory.updatedAt)}{homeHistory.stale && <span className="negative"> · {t("后台更新暂缓，当前显示上次成功结果")}</span>}</p>
+          <section><h2>{t("已结算净盈亏历史")}</h2><Chart rows={homeHistory.history} field="settledProfit"/></section>
+          <section><h2>{t("按人员统计 · 已结算")}</h2><Table rows={homeHistory.leaders} columns={[["name",t("人员")],["count",t("结算记录数")],["profit",t("结算净盈亏"),pnl]]}/></section>
+          <section><h2>{t("每日已结算盈亏")}</h2><p className="note">{t("每天北京时间10点统计前一天，生成后金额固定；未生成的日期不显示。")}</p><Table rows={homeHistory.days} columns={[["day",t("日期")],["profit",t("净盈亏"),pnl]]}/></section>
+        </> : <p className="note">{t("历史统计正在初始化，余额已独立显示。")}</p>}
       </>}
       {page === 'daily' && <DailyReports/>}
       {page === 'leaders' && <><p className="note">{t(settings?.config?.followWallets?.length ? t("只跟选定人员，不随月榜名次变化切换跟单。") : t("官方月度 PNL 包含持仓估值变化。离榜后停止跟买，已有虚拟仓位继续管理。"))}</p><Table rows={listing.data} columns={[["rank", t("月榜名次")], ["name", t("人员")], ["id", t("钱包"), value => <code title={value}>{t(short(value))}</code>], ["pnl", t("官方月度 PNL"), pnl], ["active", t("跟单状态"), value => value ? <span className="positive">{t("跟买中")}</span> : t("仅管理已有仓位")], ["inventoryValid", t("库存基线"), value => value ? t("已核对") : t("待核对")], ["joinedAt", t("本次加入"), time]]}/></>}
       {['copies', 'positions', 'settlements'].includes(page) && <>
-        <form className="filters" onSubmit={event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); ['from', 'to'].forEach(key => { if (values[key]) values[key] = new Date(values[key]).toISOString(); }); setFilter(values); setOffset(0); }}>
+        <form className="filters" onSubmit={event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); setFilter(values); setOffset(0); }}>
           <select name="wallet" aria-label={t("跟单人")} className="trader-filter" key={page+filter.wallet} defaultValue={filter.wallet}>
             <option value="">{t("全部跟单人")}</option>
             {filter.wallet && !traders.some(row=>row.id===filter.wallet) && <option value={filter.wallet}>{short(filter.wallet)}</option>}
             {traders.map(row=><option key={row.id} value={row.id}>{row.name || t("未命名")}（{short(row.id)}）</option>)}
           </select>
-          <input name="condition" placeholder="Condition ID" defaultValue={filter.condition}/>{page === 'copies' && <select name="status" defaultValue={filter.status}><option value="">{t("全部状态")}</option><option value="FILLED">{t("已成交")}</option><option value="PARTIAL">{t("部分成交")}</option><option value="SKIPPED">{t("已跳过")}</option></select>}<input aria-label={t("开始时间")} name="from" type="datetime-local"/><input aria-label={t("结束时间")} name="to" type="datetime-local"/><button>{t("筛选")}</button><a className="export" href={'/api/export/' + page + '?' + new URLSearchParams(filter)}>{t("导出当前筛选前 500 条")}</a>
+          <input name="condition" placeholder="Condition ID" defaultValue={filter.condition}/>{page === 'copies' && <><select name="status" defaultValue={filter.status}><option value="">{t("全部状态")}</option><option value="FILLED">{t("已成交")}</option><option value="PARTIAL">{t("部分成交")}</option><option value="SKIPPED">{t("已跳过")}</option></select><select name="settlementStatus" aria-label={t("结算状态")} defaultValue={filter.settlementStatus||''}><option value="">{t("全部结算状态")}</option><option value="settled">{t("已结算")}</option><option value="pending">{t("未结算")}</option></select></>}<input aria-label={t("开始时间")} name="from" type="datetime-local" value={filter.from} onChange={event => { const value = event.target.value; setFilter(prior => ({ ...prior, from: value })); setOffset(0); }}/><input aria-label={t("结束时间")} name="to" type="datetime-local" value={filter.to} onChange={event => { const value = event.target.value; setFilter(prior => ({ ...prior, to: value })); setOffset(0); }}/><button>{t("筛选")}</button><a className="export" href={'/api/export/' + page + '?' + new URLSearchParams(listingFilter(filter, page))}>{t("导出当前筛选前 500 条")}</a>
         </form>
-        {page === 'copies' && <Table rows={listing.data} onRow={openOrder} columns={[["traderName", t("跟单人员")], ["title", t("赛事 / 预测事件"), marketCell], marketInfoColumn, directionColumn, ["side", t("操作"), value => t(status[value])], ["status", t("状态"), value => <span className="tag">{t(status[value] || t("处理中"))}</span>], originalAmountColumn, ownAmountColumn, sourcePriceColumn, ownPriceColumn, sourceTimeColumn, copyTimeColumn, delayColumn, ["quantity", t("成交份额"), money], ["fee", t("费用 · USDT"), money], ["reason", t("说明"), (value, row) => ['SKIPPED', 'WAITING'].includes(row.status) ? readableReason(value) : '—']]}/>}
-        {page === 'positions' && <Table rows={listing.data} columns={[["title", t("未结算市场"), marketCell], marketInfoColumn, ["traderName", t("跟单人员")], ["outcome", t("下注方向")], ["quantity", t("剩余份额"), money], ["cost", t("未结算投入 · 含费"), money]]}/>}
-        {page === 'settlements' && <Table rows={listing.data} columns={[["createdAt", t("结算时间"), time], ["title", t("市场"), marketCell], marketInfoColumn, ["outcome", t("下注方向")], ["traderName", t("跟单人员")], ["quantity", t("结算份额"), money], ["payout", t("每份兑付"), money], ["revenue", t("结算收入"), money], ["cost", t("投入成本"), money], ["profit", t("净利润"), pnl]]}/>}
+        {page === 'copies' && <Table rows={listing.data} onRow={openOrder} rowClassName={settlementRowClass} columns={[["traderName", t("跟单人员")], ["title", t("赛事 / 预测事件"), marketCell], marketInfoColumn, directionColumn, ["side", t("操作"), value => t(status[value])], ["status", t("状态"), value => <span className="tag">{t(status[value] || t("处理中"))}</span>], settlementColumn, originalAmountColumn, ownAmountColumn, sourcePriceColumn, ownPriceColumn, sourceTimeColumn, copyTimeColumn, delayColumn, ["quantity", t("成交份额"), money], ["fee", t("费用 · USDT"), money], ["reason", t("说明"), (value, row) => ['SKIPPED', 'WAITING'].includes(row.status) ? readableReason(value) : '—']]}/>}
+        {page === 'positions' && <Table rows={listing.data} columns={[["title", t("未结算市场"), marketCell], marketInfoColumn, ["traderName", t("跟单人员")], ["outcome", t("下注方向")], ["quantity", t("剩余份额"), money], ["cost", t("未结算投入 · 含费"), money], ["openedAt", t("持仓时长"), value=>value?Math.max(0,(Date.now()-new Date(value).getTime())/3600000).toFixed(1)+" "+t("小时"):"—"]]}/>}
+        {page === 'settlements' && <Table rows={listing.data} rowClassName={settlementRowClass} columns={[["createdAt", t("结算时间"), time], ["title", t("市场"), marketCell], marketInfoColumn, ["outcome", t("下注方向")], ["traderName", t("跟单人员")], ["quantity", t("结算份额"), money], ["payout", t("每份兑付"), money], ["revenue", t("结算收入"), money], ["cost", t("投入成本"), money], ["profit", t("净利润"), pnl]]}/>}
         <div className="pagination"><span>{t("共")}{t(listing.total || 0)}{t("条 · 当前")}{t(offset + 1)}–{t(offset + listing.data.length)}</span><button className="secondary" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 100))}>{t("上一页")}</button><button className="secondary" disabled={offset + listing.data.length >= (listing.total || 0)} onClick={() => setOffset(offset + 100)}>{t("下一页")}</button></div>
       </>}
       {page === 'analytics' && <MarketStatistics refreshVersion={refreshVersion}/>}
@@ -158,6 +176,7 @@ export default function App() {
       <footer>{t("虚拟资金，全部成交与结算由本系统模拟记录。")}</footer>
     </main>
     {detail && <OrderDetail value={detail} onClose={() => setDetail(null)} money={money} time={time} pnl={pnl} Table={Table}/>}
+    {depositOpen && <WalletDeposit onClose={()=>setDepositOpen(false)} onChanged={()=>{load();setRefreshVersion(value=>value+1);}}/>}
   </div>;
 }
 

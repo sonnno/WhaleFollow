@@ -6,8 +6,8 @@ try {
     client.on('error', function () { process.exitCode = 1; });
     client.connect(function (err) {
       if (err) { process.exitCode = 1; return; }
-      client.query('SELECT "updatedAt" FROM paper_settings WHERE id=$1', ['worker-health'], function (error, result) {
-        if (error || !result.rows[0] || Date.now() - new Date(result.rows[0].updatedAt).getTime() > 180000) process.exitCode = 1;
+      client.query('SELECT "updatedAt",value FROM paper_settings WHERE id=$1', ['worker-health'], function (error, result) {
+        if (error || !result.rows[0] || result.rows[0].value && result.rows[0].value.executionHalted || Date.now() - new Date(result.rows[0].updatedAt).getTime() > 180000) process.exitCode = 1;
         client.end(function () {});
       });
     });

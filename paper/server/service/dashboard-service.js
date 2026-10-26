@@ -4,61 +4,10 @@ const { D, str } = require('./accounting-service');
 const config = require('../../config').paper;
 const { describe } = require('./market-view-service');
 const tradeView=require('./trade-view-service');
-const {orderHistorySql,settlementHistorySql}=require('./accounting-history-service');
+
 
 function create(db) {
-  function cashSummary(callback) {
-    // One statement gives cash, orders and settlements the same committed snapshot.
-    const sql = `WITH accounting_orders AS (${orderHistorySql}),accounting_settlements AS (${settlementHistorySql}),settled AS (
-      SELECT s.*,COALESCE(NULLIF(p.title,''),s.condition) title,COALESCE(l.name,s.wallet) name,m.raw->'gamma' gamma
-      FROM accounting_settlements s LEFT JOIN paper_positions p ON p.wallet=s.wallet AND p.token=s.token LEFT JOIN paper_leaders l ON l.id=s.wallet LEFT JOIN paper_markets m ON m.id=s.condition
-    ), totals AS (
-      SELECT COALESCE(SUM(profit) FILTER(WHERE profit>0),0) wins,COALESCE(-SUM(profit) FILTER(WHERE profit<0),0) losses,
-        COALESCE(SUM(profit),0) profit,COALESCE(SUM(revenue),0) revenue,COALESCE(SUM(cost),0) cost,
-        COUNT(*)::int count,COUNT(*) FILTER(WHERE profit>0)::int winning,COUNT(*) FILTER(WHERE profit<0)::int losing FROM settled
-    ), bets AS (
-      SELECT COALESCE(SUM(gross+fee),0) amount FROM accounting_orders WHERE side='BUY' AND status IN ('FILLED','PARTIAL')
-    ), sales AS (
-      SELECT COALESCE(SUM(delta),0) amount FROM paper_cash_ledger WHERE kind='SELL'
-    ), pending AS (
-      SELECT COALESCE(SUM(cost),0) cost,COUNT(DISTINCT condition)::int markets FROM paper_positions WHERE quantity>0
-    ), pending_orders AS (
-      SELECT COUNT(*)::int count FROM paper_orders o JOIN paper_positions p ON p.wallet=o.wallet AND p.token=o.token
-      WHERE o.side='BUY' AND o.status IN ('FILLED','PARTIAL') AND p.quantity>0 AND COALESCE((o.details->>'positionCycle')::int,1)=p.cycle
-    ) SELECT a.cash,a."initialCash",a."createdAt",a.fees,a.realized AS "totalProfit",CURRENT_TIMESTAMP AS "updatedAt",po.count AS "pendingBets",
-      t.wins::text "settledWins",t.losses::text "settledLosses",t.profit::text "settledProfit",t.revenue::text "settlementRevenue",
-      t.cost::text "settledCost",t.count "settledCount",t.winning "winningCount",t.losing "losingCount",
-      b.amount::text wagered,s.amount::text "saleRevenue",(a.realized-t.profit)::text "saleProfit",p.cost::text "pendingCost",p.markets "pendingMarkets",
-      (jsonb_build_array(
-        jsonb_build_object('id','total','name','总钱包','cash',a.cash::text,'warning',(SELECT value FROM paper_settings WHERE id='balance-warning:total')),
-        jsonb_build_object('id','shared','name','公共钱包','cash',(a.cash-COALESCE((SELECT SUM(cash) FROM paper_follow_tasks WHERE "fundingMode"='dedicated'),0))::text,'warning',(SELECT value FROM paper_settings WHERE id='balance-warning:shared'))
-      ) || COALESCE((SELECT jsonb_agg(jsonb_build_object('id',f.id,'name',COALESCE(l.name,f.id)||' · 独立钱包','cash',f.cash::text,'warning',w.value) ORDER BY f."createdAt",f.id)
-        FROM paper_follow_tasks f LEFT JOIN paper_leaders l ON l.id=f.id LEFT JOIN paper_settings w ON w.id='balance-warning:dedicated:'||f.id AND (w.value->>'taskCreatedAt')::timestamptz=f."createdAt"
-        WHERE f."fundingMode"='dedicated'),'[]'::jsonb)) AS "walletBalances",
-      COALESCE((SELECT jsonb_agg(row_to_json(h) ORDER BY h."createdAt") FROM (
-        SELECT "createdAt",(SUM(profit) OVER(ORDER BY "createdAt"))::text "settledProfit" FROM (
-          SELECT "createdAt",SUM(profit) profit FROM settled GROUP BY "createdAt"
-        ) grouped ORDER BY "createdAt" DESC LIMIT 10000
-      ) h),'[]'::jsonb) history,
-      COALESCE((SELECT jsonb_agg(row_to_json(d) ORDER BY d.day DESC) FROM (
-        SELECT day::text AS day,"netProfit"::text AS profit
-        FROM paper_daily_reports WHERE "breakdownVersion">=1
-      ) d),'[]'::jsonb) days,
-      COALESCE((SELECT jsonb_agg(row_to_json(l) ORDER BY l.profit::numeric DESC) FROM (
-        SELECT wallet,name,COUNT(*)::int count,COALESCE(SUM(profit) FILTER(WHERE profit>0),0)::text wins,
-          COALESCE(-SUM(profit) FILTER(WHERE profit<0),0)::text losses,SUM(profit)::text profit FROM settled GROUP BY wallet,name
-      ) l WHERE l.wallet IS NOT NULL),'[]'::jsonb) leaders
-      FROM paper_accounts a CROSS JOIN totals t CROSS JOIN bets b CROSS JOIN sales s CROSS JOIN pending p CROSS JOIN pending_orders po WHERE a.id='paper'`;
-    db.query(sql, [], function (err, rows) {
-      if (err) return callback(err);
-      if (!rows[0]) return callback(new Error('Account not initialized'));
-      const result = rows[0];
-      result.mode = 'paper';
-      result.currency = config.currency;
-      result.history.unshift({ createdAt: result.createdAt, settledProfit: '0' });
-      callback(null, result);
-    });
-  }
+  const { cashSummary, homeHistory } = require('./home-query-service').create(db);
   function bets(filters, callback) {
     const limit = Math.min(100, Math.max(1, Number.parseInt(filters.limit || 20, 10) || 20));
     const offset = Math.max(0, Number.parseInt(filters.offset || 0, 10) || 0);
@@ -130,7 +79,7 @@ function create(db) {
         if (err) return done(err);
         create(tx).overview(function (error, value) {
           if (error) return done(error);
-          tx.insert('Snapshot', { id: crypto.randomUUID(), cash: value.cash, equity: value.equity, realized: value.realized, unrealized: value.unrealized, fees: value.fees, stale: value.stale, leaders: value.leaders }, done);
+          tx.insert('Snapshot', { id: crypto.randomUUID(), cash: value.cash, equity: value.equity, realized: value.realized, unrealized: value.unrealized, fees: value.fees, stale: value.stale, leaders: value.leaders, createdAt: function () { return 'clock_timestamp()'; } }, done);
         });
       });
     }, callback);
@@ -143,6 +92,10 @@ function create(db) {
       if (!filters[field] || !(['copies', 'sources'].includes(kind) || field !== 'status' && ['positions', 'settlements', 'cycles'].includes(kind))) return;
       values.push(String(filters[field])); clauses.push('"' + field + '"=$' + values.length);
     });
+    if (kind === 'copies' && filters.settlementStatus) {
+      if (!['settled', 'pending'].includes(filters.settlementStatus)) return callback(Object.assign(new Error('无效的结算状态'), { status: 400 }));
+      values.push(filters.settlementStatus); clauses.push('"settlementStatus"=$' + values.length);
+    }
     if (kind === 'positions' && filters.open === 'true') clauses.push('quantity>0');
     if (filters.from || filters.to) {
       for (const key of ['from', 'to']) {
@@ -157,7 +110,16 @@ function create(db) {
     const where = clauses.length ? ' WHERE ' + clauses.join(' AND ') : '';
     const order = kind === 'leaders' ? 'active DESC,rank ASC' : '"createdAt" DESC,id ASC';
     let source = tables[kind];
-    if (kind === 'copies') source = `(SELECT o.*,COALESCE(NULLIF(l.name,''),'人员名称暂未取得') "traderName",m.raw->'gamma' gamma,COALESCE(m.raw->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o',o.details->'quote'->'metadata'->'raw'->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o') outcome FROM paper_orders o LEFT JOIN paper_leaders l ON l.id=o.wallet LEFT JOIN paper_markets m ON m.id=o.condition) orders`;
+    if (kind === 'copies') source = `(SELECT o.*,COALESCE(NULLIF(l.name,''),'人员名称暂未取得') "traderName",m.raw->'gamma' gamma,
+      COALESCE(m.raw->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o',o.details->'quote'->'metadata'->'raw'->'t'->(o.details->'signal'->>'outcomeIndex')::int->>'o') outcome,
+      CASE WHEN o.side='BUY' AND o.status IN ('FILLED','PARTIAL') THEN
+        CASE WHEN s.id IS NOT NULL THEN 'settled'
+          WHEN p.cycle=COALESCE((o.details->>'positionCycle')::int,1) AND p.quantity>0 THEN 'pending'
+          ELSE 'sold' END ELSE NULL END AS "settlementStatus",
+      CASE WHEN o.side='BUY' AND o.status IN ('FILLED','PARTIAL') THEN s.profit::text ELSE NULL END AS "settlementProfit"
+      FROM paper_orders o LEFT JOIN paper_leaders l ON l.id=o.wallet LEFT JOIN paper_markets m ON m.id=o.condition
+      LEFT JOIN paper_settlements s ON s.id=o.wallet||':'||o.token||':'||COALESCE(o.details->>'positionCycle','1')
+      LEFT JOIN paper_positions p ON p.id=o.wallet||':'||o.token) orders`;
     if (kind === 'positions') source = '(SELECT p.*,COALESCE(NULLIF(l.name,\'\'),\'人员名称暂未取得\') "traderName",m.raw->\'gamma\' gamma,m.raw->\'t\'->p."outcomeIndex"->>\'o\' outcome FROM paper_positions p LEFT JOIN paper_leaders l ON l.id=p.wallet LEFT JOIN paper_markets m ON m.id=p.condition) holdings';
     if (kind === 'settlements') source = '(SELECT s.*,COALESCE(NULLIF(l.name,\'\'),\'人员名称暂未取得\') "traderName",m.raw->\'gamma\' gamma,COALESCE(NULLIF(p.title,\'\'),\'市场名称暂未取得\') title,m.raw->\'t\'->p."outcomeIndex"->>\'o\' outcome FROM paper_settlements s LEFT JOIN paper_leaders l ON l.id=s.wallet LEFT JOIN paper_positions p ON p.wallet=s.wallet AND p.token=s.token LEFT JOIN paper_markets m ON m.id=s.condition) results';
     db.query('SELECT *,COUNT(*) OVER()::int AS "totalRows" FROM ' + source + where + ' ORDER BY ' + order + ' LIMIT $' + (values.length + 1) + ' OFFSET $' + (values.length + 2), [...values, limit, offset], function (err, rows) {
@@ -192,6 +154,7 @@ function create(db) {
         const view = { ...summary, side: order.side, executionStatus: order.status, executionAttempts: order.details.attempts || 0, status: lifecycle, reason: order.reason,
           amount: str(order.side === 'BUY' ? D(order.gross).plus(order.fee) : D(order.gross).minus(order.fee)), fee: order.fee,
           quantity: order.quantity, averagePrice: D(order.quantity).gt(0) ? str(D(order.gross).div(order.quantity)) : null,
+          matchRatio: order.details.matchRatio || null,
           sourceAmount: order.details.sourceAmount || str(signal.sourceAmount === undefined ? D(signal.size).mul(signal.price) : signal.sourceAmount), gross: order.gross,
           sourcePrice: signal.price || null, sourceTimestamp: signal.timestamp, receivedAt: signal.receivedAt || null, executionTimings: order.details.timings || {}, createdAt: order.createdAt };
         tradeView.enrich(view);
@@ -206,25 +169,31 @@ function create(db) {
   function analytics(callback) {
     let snapshots;
     async.waterfall([
-      function (next) { db.query('SELECT * FROM paper_equity_snapshots ORDER BY "createdAt" DESC LIMIT 10000', [], next); },
+      function (next) { db.query(`SELECT *,to_char("createdAt" AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cashFlowTime" FROM paper_equity_snapshots ORDER BY "createdAt" DESC LIMIT 10000`, [], next); },
       function (rows, next) { snapshots = rows.reverse(); db.query('SELECT wallet,SUM(realized)::text AS realized,SUM(cost)::text AS cost,SUM(quantity*COALESCE(mark,CASE WHEN quantity>0 THEN cost/quantity ELSE 0 END)-cost)::text AS unrealized FROM paper_positions GROUP BY wallet ORDER BY SUM(realized) DESC', [], next); },
-      function (leaders, next) {
-        let peak = D(0), drawdown = D(0);
+      function (leaders, next) { db.query(`SELECT delta,"createdAt",to_char("createdAt" AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "cashFlowTime" FROM paper_cash_ledger WHERE kind='DEPOSIT' ORDER BY "createdAt",id`, [], function (err, flows) { next(err, { leaders, flows }); }); },
+      function (context, next) {
+        const leaders = context.leaders, flows = context.flows;
+        let peak = D(1), drawdown = D(0), nav = D(1), contributed = D(0), flowIndex = 0, priorPoint, priorContributed = D(0);
         const daily = {};
         snapshots.forEach(function (point) {
-          if (D(point.equity).gt(peak)) peak = D(point.equity);
-          const dd = peak.gt(0) ? peak.minus(point.equity).div(peak).mul(100) : D(0);
+          while (flowIndex < flows.length && (flows[flowIndex].cashFlowTime || new Date(flows[flowIndex].createdAt).toISOString()) <= (point.cashFlowTime || new Date(point.createdAt).toISOString())) contributed = contributed.plus(flows[flowIndex++].delta);
+          // Compare returns on the capital available during this interval. A
+          // deposit raises equity, but cannot manufacture profit or a new peak.
+          if (priorPoint) { const base = D(priorPoint.equity).plus(contributed.minus(priorContributed)); if (base.gt(0)) nav = nav.mul(point.equity).div(base); }
+          if (nav.gt(peak)) peak = nav;
+          const dd = peak.gt(0) ? peak.minus(nav).div(peak).mul(100) : D(0);
           if (dd.gt(drawdown)) drawdown = dd;
           const day = new Date(new Date(point.createdAt).getTime() + 8 * 3600000).toISOString().slice(0, 10);
-          daily[day] = point;
+          daily[day] = { point, contributed }; priorPoint = point; priorContributed = contributed;
         });
         let previous = null;
-        const days = Object.entries(daily).map(function ([day, point]) { const value = { day, equity: point.equity, pnl: previous ? str(D(point.equity).minus(previous.equity)) : null, realizedChange: previous ? str(D(point.realized).minus(previous.realized)) : null }; previous = point; return value; });
+        const days = Object.entries(daily).map(function ([day, entry]) { const point = entry.point; const value = { day, equity: point.equity, pnl: previous ? str(D(point.equity).minus(previous.point.equity).minus(entry.contributed.minus(previous.contributed))) : null, realizedChange: previous ? str(D(point.realized).minus(previous.point.realized)) : null }; previous = entry; return value; });
         db.query('SELECT condition,SUM(realized)::text AS realized,SUM(cost)::text AS cost FROM paper_positions GROUP BY condition ORDER BY SUM(realized) DESC', [], function (err, markets) { next(err, { snapshots, leaders, markets, days, maxDrawdownPercent: str(drawdown), limitedToLastSnapshots: 10000 }); });
       }
     ], callback);
   }
-  return { overview, cashSummary, bets, snapshot, list, detail, analytics };
+  return { overview, cashSummary, homeHistory, bets, snapshot, list, detail, analytics };
 }
 module.exports = { create };
 

@@ -4,6 +4,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+test('worker runtime volume is writable so executed receipts survive database outages', function () {
+  const compose = fs.readFileSync(path.join(__dirname, '../../compose.yaml'), 'utf8');
+  const worker = compose.split('\n  worker:')[1].split('\nvolumes:')[0];
+  assert.match(worker, /volumes:\s*\n\s*- runtime:\/var\/lib\/whalefollow\s*\n/);
+});
+
 test('first Compose boot generates private persistent credentials and matching PostgreSQL secret', function (t) {
   const runtime = require('../deploy/runtime');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whalefollow-runtime-'));

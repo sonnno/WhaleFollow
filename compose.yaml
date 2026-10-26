@@ -55,7 +55,7 @@ services:
       POSTGRES_DB: whalefollow_paper
       POSTGRES_PASSWORD_FILE: /run/whalefollow/postgres-password
       TZ: Asia/Shanghai
-    command: [postgres, -c, shared_buffers=128MB, -c, work_mem=4MB, -c, max_connections=40, -c, max_parallel_workers_per_gather=0]
+    command: [postgres, -c, shared_buffers=128MB, -c, work_mem=4MB, -c, max_connections=40, -c, max_parallel_workers_per_gather=0, -c, jit=off, -c, log_min_duration_statement=1000, -c, log_parameter_max_length=0]
     depends_on:
       bootstrap:
         condition: service_completed_successfully
